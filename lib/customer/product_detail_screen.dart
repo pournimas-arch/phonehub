@@ -61,15 +61,11 @@ class ProductDetailScreen extends StatefulWidget {
 }
 
 class _ProductDetailScreenState extends State<ProductDetailScreen> {
-  static const storages = ['64 GB', '128 GB', '256 GB'];
-  static const conditions = ['Like New', 'Good', 'Fair'];
   static const _conditionInfo = {
     'Like New': 'No visible scratches. Looks and works like a new phone.',
     'Good': 'Light signs of use. Fully working with minor marks on the body.',
     'Fair': 'Visible scratches or dents. Fully working and priced lower.',
   };
-  static const _checks = ['Display', 'Camera', 'Battery', 'Speakers & mic', 'Network & Wi-Fi', 'Sensors', 'Charging port', 'Buttons'];
-  static const _inBox = ['Phone', 'Original charger', 'Cable', 'Fresh box', 'Warranty card'];
 
   // Real customer reviews of this phone (Firestore `reviews`), kept live.
   StreamSubscription<List<ProductReview>>? _revSub;
@@ -94,9 +90,6 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
   late String storage = widget.phone.storage;
   late String condition = widget.phone.condition;
-
-  // Replace with your real product link base when the website / deep link is ready.
-  static const _shareBase = 'https://phonehub.app/phone/';
 
   final _pager = PageController();
   final _scroll = ScrollController();
@@ -156,7 +149,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       deliveryMsg = 'Sorry, we do not deliver to $pin yet';
     } else if (RegExp(r'^\d{6}$').hasMatch(pin)) {
       deliveryOk = true;
-      deliveryMsg = 'Estimated delivery by ${_fmtDate(DateTime.now().add(const Duration(days: 3)))} to $pin. Availability is confirmed at checkout.';
+      deliveryMsg = widget.phone.deliveryDays > 0
+          ? 'Estimated delivery by ${_fmtDate(DateTime.now().add(Duration(days: widget.phone.deliveryDays)))} to $pin. Availability is confirmed at checkout.'
+          : 'We deliver to $pin. The delivery date is confirmed at checkout.';
     } else {
       deliveryOk = false;
       deliveryMsg = 'Enter a valid 6-digit pincode';
@@ -194,8 +189,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   // ---------- Share (opens the phone's own share sheet: WhatsApp, Gmail, Messages, Bluetooth...) ----------
 
   Future<void> _shareProduct(Phone p) async {
-    final link = '$_shareBase${p.id}';
-    final message = 'Check out ${p.name} ($storage, $condition) on PhoneHub for ${rupee(p.price)}\n$link';
+    final message = 'Check out ${p.name} ($storage, $condition) on PhoneHub for ${rupee(p.price)}';
     final box = context.findRenderObject() as RenderBox?;
     final origin = box == null ? null : box.localToGlobal(Offset.zero) & box.size;
     try {
@@ -208,7 +202,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       debugPrint('Share failed: $e');
       await Clipboard.setData(ClipboardData(text: message));
       if (!mounted) return;
-      _toast('Share failed (${e.runtimeType}) - link copied instead');
+      _toast('Share failed (${e.runtimeType}) - text copied instead');
     }
   }
 
@@ -634,7 +628,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     final lowStock = lowStockLabel(p); // real stock, only when 1 to 5 units are left
     final revList = _reviews;
     final emi = (p.price / 6).round();
-    final specs = _specsFor(p);
+    final specs = p.specRows.isNotEmpty ? p.specRows : <(String, String)>[('Brand', p.brand), ('Battery health', '${p.battery}%')];
+    final checks = p.qualityChecks;
+    final inBox = p.inBox;
     final similar = [
       ...phones.where((x) => x.id != p.id && x.brand == p.brand),
       ...phones.where((x) => x.id != p.id && x.brand != p.brand),
@@ -789,29 +785,31 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                                 ),
                                 const SizedBox(height: 5),
                                 Text('You save ${rupee(p.mrp - p.price)} • Inclusive of all taxes', style: const TextStyle(color: AppColors.success, fontSize: AppText.small, fontWeight: FontWeight.w700)),
-                                const SizedBox(height: 12),
-                                GestureDetector(
-                                  onTap: () => _openEmiSheet(p),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                                    decoration: BoxDecoration(color: AppColors.primary.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(14)),
-                                    child: Row(
-                                      children: [
-                                        const Icon(Icons.account_balance_wallet_outlined, size: 18, color: AppColors.primary),
-                                        const SizedBox(width: 10),
-                                        Expanded(child: Text('No-cost EMI from ${rupee(emi)}/mo for 6 months', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700, fontSize: AppText.small))),
-                                        const Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.primary),
-                                      ],
+                                if (p.noCostEmi) ...[
+                                  const SizedBox(height: 12),
+                                  GestureDetector(
+                                    onTap: () => _openEmiSheet(p),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                      decoration: BoxDecoration(color: AppColors.primary.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(14)),
+                                      child: Row(
+                                        children: [
+                                          const Icon(Icons.account_balance_wallet_outlined, size: 18, color: AppColors.primary),
+                                          const SizedBox(width: 10),
+                                          Expanded(child: Text('No-cost EMI from ${rupee(emi)}/mo for 6 months', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700, fontSize: AppText.small))),
+                                          const Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.primary),
+                                        ],
+                                      ),
                                     ),
                                   ),
-                                ),
+                                ],
                                 const SizedBox(height: 10),
                                 Wrap(
                                   spacing: 8,
                                   runSpacing: 8,
                                   children: [
-                                    _miniChip(Icons.local_shipping_outlined, 'Free delivery', AppColors.primary),
-                                    _miniChip(Icons.currency_rupee_rounded, 'Cash on delivery', AppColors.primary),
+                                    _miniChip(Icons.local_shipping_outlined, deliveryFor(p.price) == 0 ? 'Free delivery' : 'Delivery ${rupee(deliveryFor(p.price))}', AppColors.primary),
+                                    if (p.cashOnDelivery) _miniChip(Icons.currency_rupee_rounded, 'Cash on delivery', AppColors.primary),
                                   ],
                                 ),
                               ],
@@ -845,13 +843,13 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                               children: [
                                 _title('Storage'),
                                 const SizedBox(height: 10),
-                                _pills([...storages, if (!storages.contains(storage)) storage], storage, (v) => storage = v, fixed: true),
+                                _pills(storage.isEmpty ? const <String>[] : [storage], storage, (v) => storage = v, fixed: true),
                                 const SizedBox(height: 16),
                                 const Divider(height: 1, color: _line),
                                 const SizedBox(height: 16),
                                 _title('Condition'),
                                 const SizedBox(height: 10),
-                                _pills([...conditions, if (!conditions.contains(condition)) condition], condition, (v) => condition = v, fixed: true),
+                                _pills(condition.isEmpty ? const <String>[] : [condition], condition, (v) => condition = v, fixed: true),
                                 const SizedBox(height: 10),
                                 Container(
                                   width: double.infinity,
@@ -900,53 +898,59 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                           ),
                           const SizedBox(height: 16),
                           // Trust badges
-                          const Row(
+                          Row(
                             children: [
-                              Expanded(child: _Badge(Icons.verified_rounded, 'Verified\nDevice', AppColors.primary)),
-                              SizedBox(width: 10),
-                              Expanded(child: _Badge(Icons.shield_rounded, '6-Month Seller\nWarranty', AppColors.success)),
-                              SizedBox(width: 10),
-                              Expanded(child: _Badge(Icons.replay_circle_filled_rounded, '7-Day\nReturn', AppColors.accent)),
+                              const Expanded(child: _Badge(Icons.verified_rounded, 'Verified\nDevice', AppColors.primary)),
+                              if (p.warrantyMonths > 0) ...[
+                                const SizedBox(width: 10),
+                                Expanded(child: _Badge(Icons.shield_rounded, '${p.warrantyMonths}-Month Seller\nWarranty', AppColors.success)),
+                              ],
+                              if (p.returnDays > 0) ...[
+                                const SizedBox(width: 10),
+                                Expanded(child: _Badge(Icons.replay_circle_filled_rounded, '${p.returnDays}-Day\nReturn', AppColors.accent)),
+                              ],
                             ],
                           ),
                           const SizedBox(height: 22),
-                          // Quality check
-                          _card(
-                            radius: 22,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _cardHeader(
-                                  Icons.fact_check_outlined,
-                                  '40-point quality check',
-                                  trailing: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                    decoration: BoxDecoration(color: AppColors.success.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)),
-                                    child: const Text('Passed', style: TextStyle(color: AppColors.success, fontSize: AppText.caption, fontWeight: FontWeight.w800)),
+                          // Quality check (admin ticks the checks per phone)
+                          if (checks.isNotEmpty) ...[
+                            _card(
+                              radius: 22,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _cardHeader(
+                                    Icons.fact_check_outlined,
+                                    '${checks.length} quality checks',
+                                    trailing: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                      decoration: BoxDecoration(color: AppColors.success.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)),
+                                      child: const Text('Passed', style: TextStyle(color: AppColors.success, fontSize: AppText.caption, fontWeight: FontWeight.w800)),
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 14),
-                                Wrap(
-                                  spacing: 10,
-                                  runSpacing: 10,
-                                  children: [
-                                    for (final c in _checks)
-                                      SizedBox(
-                                        width: halfWidth,
-                                        child: Row(
-                                          children: [
-                                            const Icon(Icons.check_circle_rounded, color: AppColors.success, size: 16),
-                                            const SizedBox(width: 6),
-                                            Expanded(child: Text(c, style: const TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w600, color: AppColors.text))),
-                                          ],
+                                  const SizedBox(height: 14),
+                                  Wrap(
+                                    spacing: 10,
+                                    runSpacing: 10,
+                                    children: [
+                                      for (final c in checks)
+                                        SizedBox(
+                                          width: halfWidth,
+                                          child: Row(
+                                            children: [
+                                              const Icon(Icons.check_circle_rounded, color: AppColors.success, size: 16),
+                                              const SizedBox(width: 6),
+                                              Expanded(child: Text(c, style: const TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w600, color: AppColors.text))),
+                                            ],
+                                          ),
                                         ),
-                                      ),
-                                  ],
-                                ),
-                              ],
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 16),
+                            const SizedBox(height: 16),
+                          ],
                           // Delivery (pincode check + details in one card)
                           _card(
                             radius: 22,
@@ -1049,14 +1053,16 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                                 _iconRow(
                                   Icons.local_shipping_outlined,
                                   Text(
-                                    deliveryOk && deliveryMsg != null ? deliveryMsg! : 'Delivery by ${_fmtDate(DateTime.now().add(const Duration(days: 3)))}',
+                                    deliveryOk && deliveryMsg != null
+                                        ? deliveryMsg!
+                                        : (p.deliveryDays > 0 ? 'Delivery by ${_fmtDate(DateTime.now().add(Duration(days: p.deliveryDays)))}' : 'Delivery date is confirmed at checkout'),
                                     style: const TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w600, color: AppColors.text),
                                   ),
                                 ),
                                 const Divider(height: 1, color: _line),
                                 _iconRow(
                                   Icons.storefront_outlined,
-                                  const Text('Seller: PhoneHub Verified Seller\n4.5 ★  •  Quality checked device', style: TextStyle(fontSize: AppText.small, height: 1.4, color: AppColors.text)),
+                                  Text('Seller: PhoneHub Verified Seller\n${_revs.isEmpty ? '' : '$_avgText ★  •  '}Quality checked device', style: const TextStyle(fontSize: AppText.small, height: 1.4, color: AppColors.text)),
                                   trailing: const Icon(Icons.verified_rounded, color: AppColors.primary, size: 18),
                                 ),
                               ],
@@ -1088,29 +1094,31 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                             ),
                           ),
                           const SizedBox(height: 22),
-                          // What's in the box
-                          _title("What's in the box"),
-                          const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              for (final b in _inBox)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22), border: Border.all(color: _line)),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Icons.check_rounded, size: 14, color: AppColors.success),
-                                      const SizedBox(width: 5),
-                                      Text(b, style: const TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w700, color: AppColors.text)),
-                                    ],
+                          // What's in the box (admin list per phone)
+                          if (inBox.isNotEmpty) ...[
+                            _title("What's in the box"),
+                            const SizedBox(height: 10),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                for (final b in inBox)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22), border: Border.all(color: _line)),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.check_rounded, size: 14, color: AppColors.success),
+                                        const SizedBox(width: 5),
+                                        Text(b, style: const TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w700, color: AppColors.text)),
+                                      ],
+                                    ),
                                   ),
-                                ),
-                            ],
-                          ),
-                          const SizedBox(height: 22),
+                              ],
+                            ),
+                            const SizedBox(height: 22),
+                          ],
                           // Ratings & reviews (real reviews from customers)
                           _title('Ratings & reviews'),
                           const SizedBox(height: 10),
@@ -1287,29 +1295,31 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                       child: const Icon(Icons.add_shopping_cart_rounded, size: 21),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    flex: 5,
-                    child: SizedBox(
-                      height: 48,
-                      child: OutlinedButton(
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.primary,
-                          backgroundColor: Colors.white,
-                          side: BorderSide(color: AppColors.primary.withValues(alpha: 0.35), width: 1.4),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                        ),
-                        onPressed: () => _openEmiSheet(p),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Text('Buy with EMI', style: TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w800)),
-                            Text('From ${rupee(emi)}/m', style: const TextStyle(fontSize: AppText.caption, fontWeight: FontWeight.w500)),
-                          ],
+                  if (p.noCostEmi) ...[
+                    const SizedBox(width: 10),
+                    Expanded(
+                      flex: 5,
+                      child: SizedBox(
+                        height: 48,
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppColors.primary,
+                            backgroundColor: Colors.white,
+                            side: BorderSide(color: AppColors.primary.withValues(alpha: 0.35), width: 1.4),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          ),
+                          onPressed: () => _openEmiSheet(p),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text('Buy with EMI', style: TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w800)),
+                              Text('From ${rupee(emi)}/m', style: const TextStyle(fontSize: AppText.caption, fontWeight: FontWeight.w500)),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
+                  ],
                   const SizedBox(width: 10),
                   Expanded(
                     flex: 5,
@@ -1729,45 +1739,6 @@ class _GalleryViewerState extends State<_GalleryViewer> {
         ],
       ),
     );
-  }
-}
-
-// ---------- Specifications (approximate; edit to match your real listings) ----------
-
-List<(String, String)> _s(String display, String chip, String ram, String rear, String front, String battery, String os) => [
-  ('Display', display),
-  ('Processor', chip),
-  ('RAM', ram),
-  ('Rear camera', rear),
-  ('Front camera', front),
-  ('Battery', battery),
-  ('Operating system', os),
-];
-
-List<(String, String)> _specsFor(Phone p) {
-  switch (p.id) {
-    case 'p1':
-      return _s('6.1" Super Retina XDR OLED', 'Apple A15 Bionic', '4 GB', '12 MP + 12 MP dual', '12 MP', '3240 mAh', 'iOS');
-    case 'p2':
-      return _s('6.1" Super Retina XDR OLED', 'Apple A14 Bionic', '4 GB', '12 MP + 12 MP dual', '12 MP', '2815 mAh', 'iOS');
-    case 'p3':
-      return _s('6.2" Dynamic AMOLED 2X, 120 Hz', 'Exynos 2100', '8 GB', '12 MP + 64 MP + 12 MP', '10 MP', '4000 mAh', 'Android (One UI)');
-    case 'p4':
-      return _s('6.4" Super AMOLED, 120 Hz', 'Exynos 1380', '8 GB', '50 MP + 12 MP + 5 MP', '32 MP', '5000 mAh', 'Android (One UI)');
-    case 'p5':
-      return _s('6.74" AMOLED, 120 Hz', 'Snapdragon 8+ Gen 1', '16 GB', '50 MP + 8 MP + 2 MP', '16 MP', '5000 mAh', 'Android (OxygenOS)');
-    case 'p6':
-      return _s('6.7" AMOLED, 120 Hz', 'Snapdragon 782G', '8 GB', '50 MP + 8 MP + 2 MP', '16 MP', '5000 mAh', 'Android (OxygenOS)');
-    case 'p7':
-      return _s('6.67" AMOLED, 120 Hz', 'Dimensity 1080', '6 / 8 GB', '50 MP + 8 MP + 2 MP', '16 MP', '5000 mAh', 'Android (MIUI)');
-    case 'p8':
-      return _s('6.67" AMOLED, 120 Hz', 'Snapdragon 888', '8 GB', '108 MP + 8 MP + 5 MP', '16 MP', '5000 mAh, 120W charging', 'Android (MIUI)');
-    case 'p9':
-      return _s('6.7" AMOLED, 120 Hz', 'Dimensity 8100', '8 / 12 GB', '50 MP + 8 MP + 2 MP', '16 MP', '4500 / 5000 mAh', 'Android (Realme UI)');
-    case 'p10':
-      return _s('6.7" curved AMOLED, 120 Hz', 'Dimensity 7050', '8 GB', '100 MP + 2 MP', '16 MP', '5000 mAh', 'Android (Realme UI)');
-    default:
-      return [('Brand', p.brand), ('Battery health', '${p.battery}%')];
   }
 }
 

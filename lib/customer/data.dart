@@ -21,6 +21,9 @@ class Phone {
   final List<String> imageLabels;
   /// Units in stock. -1 = not tracked (older products).
   final int stock;
+  /// Everything the admin saved for this phone in `products/{id}.details` (specifications, quality
+  /// checks, what is in the box, warranty, return days, delivery days, COD, no-cost EMI).
+  final Map<String, dynamic> details;
 
   const Phone({
     required this.id,
@@ -36,9 +39,41 @@ class Phone {
     this.imageUrls = const <String>[],
     this.imageLabels = const <String>[],
     this.stock = -1,
+    this.details = const <String, dynamic>{},
   });
 
   int get off => mrp <= 0 ? 0 : (((mrp - price) / mrp) * 100).round();
+
+  List<String> _detailList(String key) => details[key] is List
+      ? (details[key] as List).map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList()
+      : <String>[];
+
+  /// Quality checks the admin ticked for this phone (empty = nothing to show).
+  List<String> get qualityChecks => _detailList('qualityChecks');
+
+  /// What comes in the box (admin list).
+  List<String> get inBox => _detailList('inBox');
+
+  /// 0 = the admin did not give a warranty / return period / delivery time for this phone.
+  int get warrantyMonths => _asInt(details['warrantyMonths']);
+  int get returnDays => _asInt(details['returnDays']);
+  int get deliveryDays => _asInt(details['deliveryDays']);
+  bool get cashOnDelivery => details['cod'] == true;
+  bool get noCostEmi => details['noCostEmi'] == true;
+
+  /// Specification rows the admin filled in (blank ones are skipped).
+  List<(String, String)> get specRows {
+    String v(String key) => (details[key] ?? '').toString().trim();
+    return [
+      ('Display', v('display')),
+      ('Processor', v('processor')),
+      ('RAM', v('ram')),
+      ('Rear camera', v('rearCamera')),
+      ('Front camera', v('frontCamera')),
+      ('Battery', v('batteryMah')),
+      ('Operating system', v('os')),
+    ].where((row) => row.$2.isNotEmpty).toList();
+  }
 
   factory Phone.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final d = doc.data() ?? <String, dynamic>{};
@@ -74,6 +109,7 @@ class Phone {
       imageUrls: parsedImages,
       imageLabels: parsedLabels,
       stock: d.containsKey('stock') ? _asInt(d['stock']) : -1,
+      details: d['details'] is Map ? Map<String, dynamic>.from(d['details'] as Map) : const <String, dynamic>{},
     );
   }
 }
@@ -550,17 +586,9 @@ Future<void> placeOrderWithStock(
       }
     }
 
-    var stockWasDeducted = false;
-    for (final entry in wanted.entries) {
-      final left = remainingStock[entry.key];
-      if (left != null) {
-        tx.update(productRefs[entry.key]!, {
-          'stock': left - entry.value,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-        stockWasDeducted = true;
-      }
-    }
+    // Stock is checked above but NOT changed here any more: customers are not allowed to write
+    // product stock (Firestore Rules). The Cloud Function `deductStockOnOrder` takes the stock off
+    // right after the order is created and sets `stockDeducted: true` on the order.
 
     tx.set(orderRef, {
       ...order.toFirestoreMap(uid),
@@ -569,7 +597,7 @@ Future<void> placeOrderWithStock(
       'status': 'Order Placed',
       'paymentStatus': 'Pending',
       'updatedAt': FieldValue.serverTimestamp(),
-      if (stockWasDeducted) 'stockDeducted': true,
+      'stockDeducted': false,
       'stockRestored': false,
       if (addressLat != null && addressLng != null) 'addressLat': addressLat,
       if (addressLat != null && addressLng != null) 'addressLng': addressLng,

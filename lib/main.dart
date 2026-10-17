@@ -2,11 +2,13 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:phonehub/app_theme_notifier.dart';
 import 'package:phonehub/firebase_options.dart';
+import 'package:phonehub/push_service.dart';
 import 'package:phonehub/role_select_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await PushService.instance.init();
   runApp(const PhoneHubApp());
 }
 

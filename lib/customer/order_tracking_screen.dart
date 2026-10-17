@@ -73,7 +73,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   // Live copy of orders/{id}: rating, delivery date, who cancelled and why.
   Map<String, dynamic> _live = <String, dynamic>{};
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _liveSubscription;
-  final Map<String, Stream<DocumentSnapshot<Map<String, dynamic>>>> _refundStreams = {};
+  final Map<String, Stream<QuerySnapshot<Map<String, dynamic>>>> _refundStreams = {};
 
   @override
   void initState() {
@@ -774,13 +774,17 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     // Live status of refunds/RF_<orderId> (the Admin approves / completes it).
     final stream = _refundStreams.putIfAbsent(
       o.id,
-          () => FirebaseFirestore.instance.collection('refunds').doc('RF_${o.id}').snapshots(),
+          () => FirebaseFirestore.instance
+          .collection('refunds')
+          .where('customerId', isEqualTo: FirebaseAuth.instance.currentUser?.uid ?? '')
+          .where('orderId', isEqualTo: o.id)
+          .snapshots(),
     );
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: stream,
       builder: (context, snap) {
-        final d = snap.data;
-        final status = (d != null && d.exists) ? (d.data()?['status'] ?? 'Requested').toString() : 'Requested';
+        final d = (snap.data?.docs.isNotEmpty ?? false) ? snap.data!.docs.first : null;
+        final status = d != null ? (d.data()['status'] ?? 'Requested').toString() : 'Requested';
         final text = status == 'Approved'
             ? 'Approved. The refund will reach ${o.paymentMethod} soon.'
             : status == 'Refunded'
@@ -1505,8 +1509,15 @@ class _ReturnCard extends StatefulWidget {
 }
 
 class _ReturnCardState extends State<_ReturnCard> {
-  late final Stream<DocumentSnapshot<Map<String, dynamic>>> _stream =
-  FirebaseFirestore.instance.collection('refunds').doc('RF_${widget.order.id}').snapshots();
+  // IMPORTANT: a direct read of refunds/RF_<id> is refused by the Firestore rules while that
+  // document does not exist yet (the rule reads resource.data), which used to hide this whole card.
+  // A query filtered by the customer's own uid is always allowed, and returns nothing until the
+  // customer has sent a return request.
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _stream = FirebaseFirestore.instance
+      .collection('refunds')
+      .where('customerId', isEqualTo: FirebaseAuth.instance.currentUser?.uid ?? '')
+      .where('orderId', isEqualTo: widget.order.id)
+      .snapshots();
   // The order document itself carries the pickup progress (returnPickupStatus ...), written by
   // the Admin (assign / received) and by the delivery partner (picked up).
   late final Stream<DocumentSnapshot<Map<String, dynamic>>> _orderStream =
@@ -1593,6 +1604,17 @@ class _ReturnCardState extends State<_ReturnCard> {
       final db = FirebaseFirestore.instance;
       final orderRef = db.collection('orders').doc(o.id);
       final refundRef = db.collection('refunds').doc('RF_${o.id}');
+      // Already requested? Checked with a query on the customer's own refunds: reading the
+      // document directly is refused by the Firestore rules while it does not exist yet.
+      final existing = await db
+          .collection('refunds')
+          .where('customerId', isEqualTo: user.uid)
+          .where('orderId', isEqualTo: o.id)
+          .limit(1)
+          .get();
+      if (existing.docs.isNotEmpty) {
+        throw StateError('A return request already exists');
+      }
       await db.runTransaction((transaction) async {
         // Re-check server state so a stale screen cannot request a return for
         // an order that was cancelled, not delivered, or belongs to someone else.
@@ -1605,11 +1627,6 @@ class _ReturnCardState extends State<_ReturnCard> {
         final status = (orderData['status'] ?? orderData['orderStatus'] ?? '').toString().toLowerCase();
         if (ownerId != user.uid || !status.contains('delivered') || status.contains('cancel')) {
           throw StateError('Order is not eligible for return');
-        }
-
-        final existingRequest = await transaction.get(refundRef);
-        if (existingRequest.exists) {
-          throw StateError('A return request already exists');
         }
 
         transaction.set(refundRef, {
@@ -1738,13 +1755,13 @@ class _ReturnCardState extends State<_ReturnCard> {
   }
 
   Widget _buildCard(Map<String, dynamic> od) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _stream,
       builder: (context, snap) {
-        if (snap.hasError) return const SizedBox.shrink();
-        final data = snap.data;
-        if (data != null && data.exists) {
-          final status = (data.data()?['status'] ?? 'Requested').toString();
+        final docs = snap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+        final data = docs.isEmpty ? null : docs.first;
+        if (data != null) {
+          final status = (data.data()['status'] ?? 'Requested').toString();
           final color = status == 'Refunded' ? AppColors.success : (status == 'Rejected' ? AppColors.danger : AppColors.accent);
           final pickup = (od['returnPickupStatus'] ?? '').toString();
           final text = status == 'Approved'
@@ -1792,6 +1809,7 @@ class _ReturnCardState extends State<_ReturnCard> {
             ),
           );
         }
+
         // No request yet: offer it only while the return window is open.
         if (!_inWindow) return const SizedBox.shrink();
         return Padding(

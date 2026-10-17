@@ -1169,29 +1169,63 @@ class PartnerTermsScreen extends StatefulWidget {
 class _PartnerTermsScreenState extends State<PartnerTermsScreen> {
   late final _terms = TextEditingController(text: store.partnerTerms.join('\n'));
   late final _privacy = TextEditingController(text: store.partnerPrivacy.join('\n'));
+  // One per line:  Question | Answer      and      Title | Text
+  late final _faqs = TextEditingController(text: store.partnerFaqs.map((f) => '${f.q} | ${f.a}').join('\n'));
+  late final _training = TextEditingController(text: store.partnerTraining.map((t) => '${t.title} | ${t.body}').join('\n'));
   bool _saving = false;
 
   @override
   void dispose() {
     _terms.dispose();
     _privacy.dispose();
+    _faqs.dispose();
+    _training.dispose();
     super.dispose();
   }
 
   List<String> _lines(String t) => t.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
 
-  Widget _box2(String label, TextEditingController c) => Padding(
+  Widget _box2(String label, TextEditingController c, {String helper = 'One point per line'}) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: TextField(
       controller: c,
       maxLines: 8,
       style: const TextStyle(fontSize: _fBody + 1),
-      decoration: _dec(label, helper: 'One point per line').copyWith(alignLabelWithHint: true),
+      decoration: _dec(label, helper: helper).copyWith(alignLabelWithHint: true),
     ),
   );
 
+  /// "Left | Right" lines -> pairs. Returns null (and the first bad line) when a line has no "|" or an empty left part.
+  (List<(String, String)>?, String) _pairs(String t) {
+    final out = <(String, String)>[];
+    for (final line in _lines(t)) {
+      final i = line.indexOf('|');
+      final left = i < 0 ? '' : line.substring(0, i).trim();
+      final right = i < 0 ? '' : line.substring(i + 1).trim();
+      if (left.isEmpty || right.isEmpty) return (null, line);
+      out.add((left, right));
+    }
+    return (out, '');
+  }
+
   Future<void> _save() async {
+    final faqs = _pairs(_faqs.text);
+    if (faqs.$1 == null) {
+      snack(context, 'FAQ line must look like: Question | Answer\n"${faqs.$2}"');
+      return;
+    }
+    final tips = _pairs(_training.text);
+    if (tips.$1 == null) {
+      snack(context, 'Training tip line must look like: Title | Text\n"${tips.$2}"');
+      return;
+    }
     setState(() => _saving = true);
+    store.partnerFaqs
+      ..clear()
+      ..addAll(faqs.$1!.map((p) => Faq(p.$1, p.$2)));
+    store.partnerTraining
+      ..clear()
+      ..addAll(tips.$1!.map((p) => PartnerTip(p.$1, p.$2)));
     store.partnerTerms
       ..clear()
       ..addAll(_lines(_terms.text));
@@ -1213,10 +1247,12 @@ class _PartnerTermsScreenState extends State<PartnerTermsScreen> {
         children: [
           const Padding(
             padding: EdgeInsets.only(bottom: 12),
-            child: Text('These texts are shown to delivery partners in their app.', style: TextStyle(color: AC.muted, fontSize: _fSmall)),
+            child: Text('These texts are shown to delivery partners in their app (Terms, Help and Training screens).', style: TextStyle(color: AC.muted, fontSize: _fSmall)),
           ),
           _box2('Terms of service', _terms),
           _box2('Privacy policy', _privacy),
+          _box2('Help FAQs for partners', _faqs, helper: 'One per line: Question | Answer'),
+          _box2('Training & safety tips', _training, helper: 'One per line: Title | Text'),
           const SizedBox(height: 6),
           _bigButton(_saving ? 'Saving...' : 'Save text', _saving ? () {} : _save, icon: Icons.check_rounded),
         ],

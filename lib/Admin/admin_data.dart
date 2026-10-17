@@ -319,6 +319,12 @@ class Faq {
   Faq(this.q, this.a);
 }
 
+/// One training / safety tip shown to delivery partners (appConfig/partnerTerms.training).
+class PartnerTip {
+  String title, body;
+  PartnerTip(this.title, this.body);
+}
+
 class Staff {
   String name, email, role;
   bool active;
@@ -405,6 +411,9 @@ class AdminStore extends ChangeNotifier {
   final List<IncentiveRule> partnerWeeklyIncentives = [];
   final List<String> partnerTerms = [];
   final List<String> partnerPrivacy = [];
+  // Partner Help FAQs and Training tips (appConfig/partnerTerms.faqs / .training), shown live in the delivery app.
+  final List<Faq> partnerFaqs = [];
+  final List<PartnerTip> partnerTraining = [];
 
   AdminStore() {
     loadFromFirebase();
@@ -815,6 +824,12 @@ class AdminStore extends ChangeNotifier {
         partnerPrivacy
           ..clear()
           ..addAll(_strings(tm['privacy']));
+        partnerFaqs
+          ..clear()
+          ..addAll(((tm['faqs'] is List) ? tm['faqs'] as List : const []).whereType<Map>().map((m) => Faq('${m['q'] ?? ''}', '${m['a'] ?? ''}')).where((f) => f.q.trim().isNotEmpty));
+        partnerTraining
+          ..clear()
+          ..addAll(((tm['training'] is List) ? tm['training'] as List : const []).whereType<Map>().map((m) => PartnerTip('${m['title'] ?? ''}', '${m['body'] ?? ''}')).where((t) => t.title.trim().isNotEmpty));
       }
     } catch (e) {
       debugPrint('PhoneHub admin: partner config failed: $e');
@@ -1199,6 +1214,16 @@ class AdminStore extends ChangeNotifier {
     for (final t in tickets) {
       jobs['ticket:${t.id}'] = _SyncJob(t.status, () async {
         await _db.collection('tickets').doc(t.id).update({'status': t.status, 'updatedAt': FieldValue.serverTimestamp()});
+        // Tell the customer / delivery partner when their request is closed (replies already notify).
+        if (t.status == 'Resolved' || t.status == 'Closed') {
+          final title = 'Support request ${t.status.toLowerCase()}';
+          final body = 'Your request "${t.subject}" is now ${t.status.toLowerCase()}. Contact support again if you still need help.';
+          if (t.partnerId.isNotEmpty) {
+            await _notifyPartner(t.partnerId, title, body, 'support');
+          } else {
+            await _notify(t.customerId, title, body, 'support');
+          }
+        }
       });
     }
 
@@ -1757,6 +1782,8 @@ class AdminStore extends ChangeNotifier {
       await _db.collection('appConfig').doc('partnerTerms').set({
         'terms': partnerTerms.where((t) => t.trim().isNotEmpty).toList(),
         'privacy': partnerPrivacy.where((t) => t.trim().isNotEmpty).toList(),
+        'faqs': partnerFaqs.where((f) => f.q.trim().isNotEmpty).map((f) => {'q': f.q.trim(), 'a': f.a.trim()}).toList(),
+        'training': partnerTraining.where((t) => t.title.trim().isNotEmpty).map((t) => {'title': t.title.trim(), 'body': t.body.trim()}).toList(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       notifyListeners();

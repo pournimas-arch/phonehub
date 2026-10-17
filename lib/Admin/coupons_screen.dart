@@ -438,21 +438,6 @@ class _CouponsTabState extends State<_CouponsTab> {
                 ),
               ),
 
-              // ---- stats ----
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
-                child: Row(
-                  children: [
-                    _stat(Icons.sell_rounded, AC.primary, '${all.length}', 'Total'),
-                    const SizedBox(width: 8),
-                    _stat(Icons.check_circle_rounded, AC.success, '$activeCount', 'Live'),
-                    const SizedBox(width: 8),
-                    _stat(Icons.schedule_rounded, AC.warning, '$soonCount', 'Ending soon'),
-                    const SizedBox(width: 8),
-                    _stat(Icons.event_busy_rounded, AC.muted, '$expiredCount', 'Expired'),
-                  ],
-                ),
-              ),
 
               // ---- filter chips ----
               SizedBox(

@@ -12,6 +12,9 @@ dependencies:
   crypto: ^3.0.7
   firebase_auth: ^6.7.0
   firebase_core: ^4.15.0
+  # NEW: push notifications. If pub reports a version clash with firebase_core,
+  # run `flutter pub add firebase_messaging` and it will pick the matching version.
+  firebase_messaging: ^16.0.0
   firebase_storage: ^13.6.0
   flutter:
     sdk: flutter
@@ -21,8 +24,6 @@ dependencies:
   image_picker: ^1.2.4
   share_plus: ^13.3.1
   shared_preferences: ^2.5.6
-  # NEW: needed by customer/order_tracking_screen.dart (call partner)
-  # and delivery partner/navigation_screen.dart (call customer / open Maps)
   url_launcher: ^6.3.2
 
 dev_dependencies:

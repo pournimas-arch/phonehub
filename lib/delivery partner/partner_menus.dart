@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:phonehub/delivery%20partner/app_theme.dart';
 import 'package:phonehub/delivery%20partner/common.dart';
@@ -29,6 +30,40 @@ const Color _amber = Color(0xFFB45309);
 /// Reads a text field of the partner's saved record (partners/{email}).
 String _s(Map<String, dynamic> d, String k) => (d[k] ?? '').toString().trim();
 String _orDash(String v) => v.isEmpty ? '—' : v;
+
+/// Live copy of an admin-edited document (appConfig/{name}). Errors are treated as "nothing saved".
+Stream<Map<String, dynamic>> _cfg(String name) => FirebaseFirestore.instance
+    .doc('appConfig/$name')
+    .snapshots()
+    .map((s) => s.data() ?? <String, dynamic>{})
+    .handleError((_) {});
+
+List<String> _strs(dynamic v) =>
+    v is List ? v.map((e) => '$e'.trim()).where((e) => e.isNotEmpty).toList() : <String>[];
+
+List<Map<String, dynamic>> _maps(dynamic v) => v is List
+    ? v.whereType<Map>().map((e) => e.map((k, val) => MapEntry('$k', val))).toList()
+    : <Map<String, dynamic>>[];
+
+bool _isSameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+
+/// Small spinner card shown only while the first copy of the admin's text is loading.
+Widget _loadingCard() => _card(
+  child: const Center(
+    child: Padding(
+      padding: EdgeInsets.symmetric(vertical: 10),
+      child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+    ),
+  ),
+);
+
+/// Shown when the admin has not saved this text yet (nothing is made up in the app).
+Widget _notSetCard(String text) => _card(
+  child: Text(
+    text,
+    style: const TextStyle(color: AppColors.muted, height: 1.45, fontSize: 12),
+  ),
+);
 
 /// "Not uploaded" | "Pending" | "Verified" | "Rejected" for a document key (licence / aadhaar / rc).
 String _docStatusOf(Map<String, Map<String, dynamic>> docs, String key) {
@@ -1189,21 +1224,7 @@ class DeliveryHistoryScreen extends StatelessWidget {
 class IncentivesScreen extends StatelessWidget {
   const IncentivesScreen({super.key});
 
-  static const int _dailyTarget = 10;
-
-  // Sample reward slabs. Change the numbers to match your real policy.
-  static const List<List<Object>> _daily = [
-    [5, 'Complete 5 deliveries', '₹50 bonus'],
-    [10, 'Complete 10 deliveries', '₹150 bonus'],
-  ];
-  static const List<List<String>> _weekly = [
-    ['Complete 50 deliveries', '₹500 bonus'],
-    ['Zero cancellations this week', '₹200 bonus'],
-    ['Peak hour deliveries (6 PM - 9 PM)', '1.5x earnings'],
-  ];
-
-  Widget _dailyTile(int done, List<Object> slab) {
-    final target = slab[0] as int;
+  Widget _dailyTile(int done, int target, String title, String reward) {
     final reached = done >= target;
     final color = reached ? AppColors.success : AppColors.muted;
 
@@ -1228,7 +1249,7 @@ class IncentivesScreen extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              slab[1] as String,
+              title,
               style: const TextStyle(
                 fontWeight: FontWeight.w600,
                 fontSize: 12,
@@ -1236,7 +1257,7 @@ class IncentivesScreen extends StatelessWidget {
               ),
             ),
           ),
-          _chip(slab[2] as String, reached ? AppColors.success : _amber),
+          if (reward.isNotEmpty) _chip(reward, reached ? AppColors.success : _amber),
         ],
       ),
     );
@@ -1244,76 +1265,114 @@ class IncentivesScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<List<DeliveryOrder>>(
-      valueListenable: orders,
-      builder: (context, orderList, child) {
-        final done = orderList.where((o) => o.status == 'Delivered').length;
-        final progress = (done / _dailyTarget).clamp(0.0, 1.0);
-        final left = (_dailyTarget - done).clamp(0, _dailyTarget);
+    // Daily target, daily and weekly rewards = what the admin saved in Settings (appConfig/partnerIncentives).
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: _cfg('partnerIncentives'),
+      builder: (context, cfgSnap) {
+        final cfg = cfgSnap.data ?? const <String, dynamic>{};
+        final loading = !cfgSnap.hasData && cfgSnap.connectionState == ConnectionState.waiting;
+        final t = cfg['dailyTarget'];
+        final daily = _maps(cfg['daily'])
+            .map((m) => (
+        target: m['target'] is num ? (m['target'] as num).toInt() : 0,
+        title: '${m['title'] ?? ''}'.trim(),
+        reward: '${m['reward'] ?? ''}'.trim(),
+        ))
+            .where((r) => r.title.isNotEmpty)
+            .toList()
+          ..sort((a, b) => a.target.compareTo(b.target));
+        final weekly = _maps(cfg['weekly'])
+            .map((m) => (title: '${m['title'] ?? ''}'.trim(), reward: '${m['reward'] ?? ''}'.trim()))
+            .where((r) => r.title.isNotEmpty)
+            .toList();
 
-        return _scaffold(
-          title: 'Incentives & Rewards',
-          sections: [
-            _header(
-              caption: "Today's bonus progress",
-              title: '$done / $_dailyTarget deliveries',
-              subtitle: left == 0
-                  ? 'Target reached. Great work!'
-                  : '$left more to unlock the top daily bonus',
-              icon: Icons.card_giftcard_rounded,
-              footer: ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: LinearProgressIndicator(
-                  value: progress,
-                  minHeight: 6,
-                  backgroundColor: Colors.white.withValues(alpha: 0.25),
-                  valueColor: const AlwaysStoppedAnimation<Color>(
-                      Colors.white),
+        // Goal = the admin's daily target; if none is set, the biggest daily reward slab.
+        var goal = t is num ? t.toInt() : 0;
+        if (goal <= 0 && daily.isNotEmpty) goal = daily.last.target;
+
+        return ValueListenableBuilder<List<DeliveryOrder>>(
+          valueListenable: orders,
+          builder: (context, orderList, child) {
+            final now = DateTime.now();
+            // Today's progress = orders this partner actually delivered today.
+            final done = orderList
+                .where((o) => o.status == 'Delivered' && o.deliveredAt != null && _isSameDay(o.deliveredAt!, now))
+                .length;
+            final progress = goal > 0 ? (done / goal).clamp(0.0, 1.0) : 0.0;
+            final left = goal > 0 ? (goal - done).clamp(0, goal) : 0;
+
+            return _scaffold(
+              title: 'Incentives & Rewards',
+              sections: [
+                _header(
+                  caption: "Today's bonus progress",
+                  title: goal > 0 ? '$done / $goal deliveries' : '$done deliveries today',
+                  subtitle: goal <= 0
+                      ? 'No daily target has been set yet'
+                      : left == 0
+                      ? 'Target reached. Great work!'
+                      : '$left more to unlock the top daily bonus',
+                  icon: Icons.card_giftcard_rounded,
+                  footer: goal > 0
+                      ? ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 6,
+                      backgroundColor: Colors.white.withValues(alpha: 0.25),
+                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                      : null,
                 ),
-              ),
-            ),
-            _card(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _sectionTitle(Icons.today_rounded, 'Daily bonuses'),
-                  const SizedBox(height: 8),
-                  for (final slab in _daily) _dailyTile(done, slab),
-                ],
-              ),
-            ),
-            _card(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _sectionTitle(Icons.date_range_rounded, 'Weekly bonuses'),
-                  const SizedBox(height: 8),
-                  for (final w in _weekly)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 5),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.stars_rounded,
-                              size: 16, color: _teal),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              w[0],
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 12,
-                                color: AppColors.text,
-                              ),
+                if (loading) _loadingCard(),
+                if (!loading && daily.isEmpty && weekly.isEmpty)
+                  _notSetCard('No bonuses have been published yet. They will appear here as soon as the admin adds them.'),
+                if (daily.isNotEmpty)
+                  _card(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _sectionTitle(Icons.today_rounded, 'Daily bonuses'),
+                        const SizedBox(height: 8),
+                        for (final r in daily) _dailyTile(done, r.target, r.title, r.reward),
+                      ],
+                    ),
+                  ),
+                if (weekly.isNotEmpty)
+                  _card(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _sectionTitle(Icons.date_range_rounded, 'Weekly bonuses'),
+                        const SizedBox(height: 8),
+                        for (final w in weekly)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 5),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.stars_rounded, size: 16, color: _teal),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    w.title,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12,
+                                      color: AppColors.text,
+                                    ),
+                                  ),
+                                ),
+                                if (w.reward.isNotEmpty) _chip(w.reward, _amber),
+                              ],
                             ),
                           ),
-                          _chip(w[1], _amber),
-                        ],
-                      ),
+                      ],
                     ),
-                ],
-              ),
-            ),
-          ],
+                  ),
+              ],
+            );
+          },
         );
       },
     );
@@ -1337,84 +1396,118 @@ class TrainingSafetyScreen extends StatefulWidget {
 }
 
 class _TrainingSafetyScreenState extends State<TrainingSafetyScreen> {
-  static const List<_Tip> _tips = [
-    _Tip(Icons.sports_motorsports_rounded, 'Ride safe',
-        'Always wear a helmet, follow speed limits and traffic signals, and '
-            'never use your phone while riding. Stop in a safe place to check '
-            'directions.'),
-    _Tip(Icons.inventory_2_rounded, 'Handle phones with care',
-        'Phones are fragile. Keep the parcel in a padded bag, avoid placing '
-            'heavy items on top and never leave it unattended.'),
-    _Tip(Icons.verified_rounded, 'Verify before handing over',
-        'Confirm the order ID and customer name before delivery. Hand the '
-            'parcel only to the customer or the person they have named.'),
-    _Tip(Icons.payments_rounded, 'Cash on delivery',
-        'Collect the exact amount shown in the app, count the cash in front '
-            'of the customer and keep it separate from your own money.'),
-    _Tip(Icons.nightlight_round, 'Night & bad weather',
-        'Avoid unlit shortcuts at night, slow down on wet roads and protect '
-            'the parcel from rain with a waterproof cover.'),
-    _Tip(Icons.sentiment_satisfied_alt_rounded, 'Be polite and on time',
-        'Greet the customer, call if you are running late and never argue. '
-            'Good ratings lead to more orders and better incentives.'),
+  // Icons only; the tip titles and texts are written by the admin (appConfig/partnerTerms.training).
+  static const List<IconData> _icons = [
+    Icons.sports_motorsports_rounded,
+    Icons.inventory_2_rounded,
+    Icons.verified_rounded,
+    Icons.payments_rounded,
+    Icons.nightlight_round,
+    Icons.sentiment_satisfied_alt_rounded,
   ];
 
-  final Set<int> _done = {};
+  // Tips the partner marked as done (saved on this phone, per partner, by tip title).
+  final Set<String> _done = {};
+
+  String get _prefKey => 'training_done_${PartnerService.instance.current?.id ?? ''}';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDone();
+  }
+
+  Future<void> _loadDone() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getStringList(_prefKey) ?? const <String>[];
+      if (!mounted) return;
+      setState(() => _done.addAll(saved));
+    } catch (_) {
+      // progress simply starts empty
+    }
+  }
+
+  Future<void> _toggle(String title) async {
+    setState(() {
+      if (!_done.add(title)) _done.remove(title);
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_prefKey, _done.toList());
+    } catch (_) {
+      // keep the in-memory state
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return _scaffold(
-      title: 'Training & Safety',
-      sections: [
-        _header(
-          caption: 'Your progress',
-          title: '${_done.length} of ${_tips.length} completed',
-          subtitle: 'Read each tip and mark it as done',
-          icon: Icons.school_rounded,
-          footer: ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: LinearProgressIndicator(
-              value: _done.length / _tips.length,
-              minHeight: 6,
-              backgroundColor: Colors.white.withValues(alpha: 0.25),
-              valueColor:
-              const AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          ),
-        ),
-        for (int i = 0; i < _tips.length; i++)
-          _card(
-            child: _expandTile(
-              context,
-              leading: _iconBox(
-                _done.contains(i) ? Icons.check_rounded : _tips[i].icon,
-                _done.contains(i) ? AppColors.success : _teal,
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: _cfg('partnerTerms'),
+      builder: (context, snap) {
+        final loading = !snap.hasData && snap.connectionState == ConnectionState.waiting;
+        final raw = _maps(snap.data?['training']);
+        final tips = <_Tip>[
+          for (int i = 0; i < raw.length; i++)
+            if ('${raw[i]['title'] ?? ''}'.trim().isNotEmpty)
+              _Tip(_icons[i % _icons.length], '${raw[i]['title']}'.trim(), '${raw[i]['body'] ?? ''}'.trim()),
+        ];
+        final doneCount = tips.where((t) => _done.contains(t.title)).length;
+
+        return _scaffold(
+          title: 'Training & Safety',
+          sections: [
+            _header(
+              caption: 'Your progress',
+              title: '$doneCount of ${tips.length} completed',
+              subtitle: tips.isEmpty ? 'No training tips published yet' : 'Read each tip and mark it as done',
+              icon: Icons.school_rounded,
+              footer: tips.isEmpty
+                  ? null
+                  : ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: doneCount / tips.length,
+                  minHeight: 6,
+                  backgroundColor: Colors.white.withValues(alpha: 0.25),
+                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
               ),
-              title: _tips[i].title,
-              subtitle: _done.contains(i) ? 'Completed' : 'Tap to read',
-              children: [
-                Text(
-                  _tips[i].body,
-                  style: const TextStyle(
-                    color: AppColors.muted,
-                    height: 1.45,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                _outlineButton(
-                  _done.contains(i) ? 'Mark as not done' : 'Mark as done',
-                  _done.contains(i)
-                      ? Icons.undo_rounded
-                      : Icons.check_circle_outline_rounded,
-                      () => setState(() {
-                    if (!_done.add(i)) _done.remove(i);
-                  }),
-                ),
-              ],
             ),
-          ),
-      ],
+            if (loading) _loadingCard(),
+            if (!loading && tips.isEmpty)
+              _notSetCard('The admin has not added any training or safety tips yet.'),
+            for (final tip in tips)
+              _card(
+                child: _expandTile(
+                  context,
+                  leading: _iconBox(
+                    _done.contains(tip.title) ? Icons.check_rounded : tip.icon,
+                    _done.contains(tip.title) ? AppColors.success : _teal,
+                  ),
+                  title: tip.title,
+                  subtitle: _done.contains(tip.title) ? 'Completed' : 'Tap to read',
+                  children: [
+                    Text(
+                      tip.body,
+                      style: const TextStyle(
+                        color: AppColors.muted,
+                        height: 1.45,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _outlineButton(
+                      _done.contains(tip.title) ? 'Mark as not done' : 'Mark as done',
+                      _done.contains(tip.title) ? Icons.undo_rounded : Icons.check_circle_outline_rounded,
+                          () => _toggle(tip.title),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1429,32 +1522,10 @@ class HelpSupportScreen extends StatefulWidget {
 }
 
 class _HelpSupportScreenState extends State<HelpSupportScreen> {
-  // Defaults. The real numbers are the ones the admin saved in Settings (appConfig/store).
-  String _phone = '1800 123 4567';
-  String _email = 'support@phonehub.in';
-
-  static const List<List<String>> _faqs = [
-    [
-      'When do I get my payout?',
-      'Payouts are settled weekly to your registered bank account. You can '
-          'check the pending amount in Bank Account.'
-    ],
-    [
-      'What if the customer is not available?',
-      'Call the customer from the order screen. If there is no response after '
-          'two attempts, contact support before returning the parcel.'
-    ],
-    [
-      'How do I report a wrong address?',
-      'Tap Report an issue below with the order ID and the correct landmark. '
-          'Support will help you reach the customer.'
-    ],
-    [
-      'My vehicle broke down. What now?',
-      'Call support immediately. Your order will be reassigned so the '
-          'customer is not affected.'
-    ],
-  ];
+  // Support contact = what the admin saved in Settings (appConfig/store). Nothing is made up here.
+  String _phone = '';
+  String _email = '';
+  String _hours = '';
 
   @override
   void initState() {
@@ -1469,17 +1540,26 @@ class _HelpSupportScreenState extends State<HelpSupportScreen> {
       final m = doc.data() ?? <String, dynamic>{};
       final ph = _s(m, 'supportPhone');
       final em = _s(m, 'supportEmail');
+      final hr = _s(m, 'supportHours');
       if (!mounted) return;
       setState(() {
-        if (ph.isNotEmpty) _phone = ph;
-        if (em.isNotEmpty) _email = em;
+        _phone = ph;
+        _email = em;
+        _hours = hr;
       });
     } catch (_) {
-      // keep the default contacts
+      // contacts stay empty until the admin saves them
     }
   }
 
+  void _notSet(String what) =>
+      _toast(context, 'The admin has not added the support $what yet', icon: Icons.info_outline_rounded);
+
   Future<void> _call() async {
+    if (_phone.isEmpty) {
+      _notSet('number');
+      return;
+    }
     final number = _phone.replaceAll(RegExp(r'[^0-9+]'), '');
     var ok = false;
     try {
@@ -1631,9 +1711,11 @@ class _HelpSupportScreenState extends State<HelpSupportScreen> {
       bottom: _bottomBar('Report an issue', Icons.report_problem_rounded, _report),
       sections: [
         _header(
-          caption: '24x7 partner support',
-          title: _phone,
-          subtitle: 'Toll free • Always available',
+          caption: 'Partner support',
+          title: _phone.isEmpty ? 'Contact support' : _phone,
+          subtitle: _hours.isNotEmpty
+              ? _hours
+              : (_email.isNotEmpty ? _email : 'Use Report an issue below'),
           icon: Icons.headset_mic_rounded,
         ),
         Row(
@@ -1652,7 +1734,7 @@ class _HelpSupportScreenState extends State<HelpSupportScreen> {
                 icon: Icons.copy_rounded,
                 label: 'Copy number',
                 color: AppColors.primary,
-                onTap: () => _copy(context, _phone, 'Number copied'),
+                onTap: () => _phone.isEmpty ? _notSet('number') : _copy(context, _phone, 'Number copied'),
               ),
             ),
             const SizedBox(width: 8),
@@ -1661,38 +1743,48 @@ class _HelpSupportScreenState extends State<HelpSupportScreen> {
                 icon: Icons.email_rounded,
                 label: 'Copy email',
                 color: _teal,
-                onTap: () => _copy(context, _email, 'Email copied'),
+                onTap: () => _email.isEmpty ? _notSet('email') : _copy(context, _email, 'Email copied'),
               ),
             ),
           ],
         ),
         _myTickets(),
-        _card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _sectionTitle(Icons.help_outline_rounded, 'Common questions'),
-              const SizedBox(height: 4),
-              for (int i = 0; i < _faqs.length; i++) ...[
-                _expandTile(
-                  context,
-                  title: _faqs[i][0],
-                  children: [
-                    Text(
-                      _faqs[i][1],
-                      style: const TextStyle(
-                        color: AppColors.muted,
-                        height: 1.45,
-                        fontSize: 12,
-                      ),
+        // Common questions = written by the admin (appConfig/partnerTerms.faqs). Hidden until there are some.
+        StreamBuilder<Map<String, dynamic>>(
+          stream: _cfg('partnerTerms'),
+          builder: (context, snap) {
+            final faqs = _maps(snap.data?['faqs'])
+                .map((m) => (q: '${m['q'] ?? ''}'.trim(), a: '${m['a'] ?? ''}'.trim()))
+                .where((f) => f.q.isNotEmpty)
+                .toList();
+            if (faqs.isEmpty) return const SizedBox.shrink();
+            return _card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _sectionTitle(Icons.help_outline_rounded, 'Common questions'),
+                  const SizedBox(height: 4),
+                  for (int i = 0; i < faqs.length; i++) ...[
+                    _expandTile(
+                      context,
+                      title: faqs[i].q,
+                      children: [
+                        Text(
+                          faqs[i].a,
+                          style: const TextStyle(
+                            color: AppColors.muted,
+                            height: 1.45,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                     ),
+                    if (i < faqs.length - 1) const Divider(height: 1, color: AppColors.border),
                   ],
-                ),
-                if (i < _faqs.length - 1)
-                  const Divider(height: 1, color: AppColors.border),
-              ],
-            ],
-          ),
+                ],
+              ),
+            );
+          },
         ),
       ],
     );
@@ -1703,29 +1795,6 @@ class _HelpSupportScreenState extends State<HelpSupportScreen> {
 
 class TermsPrivacyScreen extends StatelessWidget {
   const TermsPrivacyScreen({super.key});
-
-  // Sample text. Replace with your final legal wording.
-  static const List<String> _terms = [
-    'You must be 18 or older and hold a valid driving licence and vehicle '
-        'documents to work as a delivery partner.',
-    'Deliver each order on time, handle parcels with care and follow all '
-        'traffic rules.',
-    'Cash collected on delivery must be handled honestly and settled as per '
-        'the payout cycle.',
-    'Accounts may be suspended for fraud, misconduct or repeated '
-        'cancellations.',
-  ];
-
-  static const List<String> _privacy = [
-    'We collect your name, phone number, documents, bank details and live '
-        'location while you are on duty.',
-    'Your location is used only to assign and track deliveries, and customers '
-        'see it only during an active order.',
-    'Your documents and bank details are stored securely and are never sold '
-        'to third parties.',
-    'You can request correction or deletion of your data by contacting '
-        'support.',
-  ];
 
   Widget _clauses(IconData icon, String title, List<String> items) {
     return _card(
@@ -1778,18 +1847,30 @@ class TermsPrivacyScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _scaffold(
-      title: 'Terms & Privacy',
-      sections: [
-        _header(
-          caption: 'Legal',
+    // Terms and privacy text = what the admin saved in Settings (appConfig/partnerTerms).
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: _cfg('partnerTerms'),
+      builder: (context, snap) {
+        final loading = !snap.hasData && snap.connectionState == ConnectionState.waiting;
+        final terms = _strs(snap.data?['terms']);
+        final privacy = _strs(snap.data?['privacy']);
+        return _scaffold(
           title: 'Terms & Privacy',
-          subtitle: 'Please read how we work together',
-          icon: Icons.description_rounded,
-        ),
-        _clauses(Icons.gavel_rounded, 'Terms of service', _terms),
-        _clauses(Icons.lock_rounded, 'Privacy policy', _privacy),
-      ],
+          sections: [
+            _header(
+              caption: 'Legal',
+              title: 'Terms & Privacy',
+              subtitle: 'Please read how we work together',
+              icon: Icons.description_rounded,
+            ),
+            if (loading) _loadingCard(),
+            if (!loading && terms.isEmpty && privacy.isEmpty)
+              _notSetCard('The terms and privacy policy have not been published yet.'),
+            if (terms.isNotEmpty) _clauses(Icons.gavel_rounded, 'Terms of service', terms),
+            if (privacy.isNotEmpty) _clauses(Icons.lock_rounded, 'Privacy policy', privacy),
+          ],
+        );
+      },
     );
   }
 }

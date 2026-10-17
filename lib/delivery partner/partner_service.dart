@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
+import 'package:phonehub/push_service.dart';
+
 import 'orders_data.dart';
 
 /// The signed-in delivery partner (record created by the admin in `partners/{email}`).
@@ -373,6 +375,8 @@ class PartnerService {
 
     startDeliveryListener(id);
     _startProfile(id);
+    // Push notifications: save this phone's token on partners/{email}.fcmToken (the uid is linked above).
+    unawaited(PushService.instance.register('partners/$id'));
     return null;
   }
 
@@ -420,6 +424,8 @@ class PartnerService {
     stopDeliveryListener();
     _stopProfile();
     current = null;
+    // Remove the push token while still signed in, so the next login on this phone starts clean.
+    await PushService.instance.unregister();
     await _auth.signOut();
   }
 

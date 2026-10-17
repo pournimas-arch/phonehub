@@ -294,23 +294,6 @@ class _PartnersScreenState extends State<PartnersScreen> {
                     ),
                   ),
                 ),
-
-                // ---- stats ----
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
-                  child: Row(
-                    children: [
-                      _stat(Icons.people_alt_rounded, AC.primary, '${all.length}', 'Total'),
-                      const SizedBox(width: 8),
-                      _stat(Icons.check_circle_rounded, AC.success, '$activeCount', 'Active'),
-                      const SizedBox(width: 8),
-                      _stat(Icons.two_wheeler_rounded, AC.warning, '$onRoadCount', 'On road'),
-                      const SizedBox(width: 8),
-                      _stat(Icons.pause_circle_rounded, AC.muted, '$inactiveCount', 'Inactive'),
-                    ],
-                  ),
-                ),
-
                 // ---- filter chips ----
                 SizedBox(
                   height: 34,

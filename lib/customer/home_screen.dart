@@ -8,6 +8,7 @@ import 'package:phonehub/customer/checkout_ui.dart';
 import 'package:phonehub/customer/notification.dart';
 import 'package:phonehub/customer/saved_addresses.dart';
 import 'package:phonehub/customer/wishlist.dart';
+import 'package:phonehub/push_service.dart';
 import 'package:phonehub/role_select_screen.dart';
 import 'widgets.dart';
 import 'theme.dart';
@@ -153,51 +154,51 @@ class _SectionTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(
-        children: [
-          Container(
-              width: 4,
-              height: 16,
-              decoration: BoxDecoration(
-                  color: AppColors.primary,
-                  borderRadius: BorderRadius.circular(4))),
-          const SizedBox(width: 8),
-          Expanded(
-              child: Text(title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      color: AppColors.text,
-                      fontSize: AppText.body,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.2))),
-          if (action != null)
-            GestureDetector(
-              onTap: onTap,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.85),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: _hCardBorder),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(action!,
-                        style: const TextStyle(
-                            color: AppColors.primary,
-                            fontSize: AppText.caption,
-                            fontWeight: FontWeight.w800)),
-                    const SizedBox(width: 2),
-                    const Icon(Icons.arrow_forward_ios_rounded,
-                        size: 10, color: AppColors.primary),
-                  ],
-                ),
-              ),
+    children: [
+      Container(
+          width: 4,
+          height: 16,
+          decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: BorderRadius.circular(4))),
+      const SizedBox(width: 8),
+      Expanded(
+          child: Text(title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  color: AppColors.text,
+                  fontSize: AppText.body,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.2))),
+      if (action != null)
+        GestureDetector(
+          onTap: onTap,
+          child: Container(
+            padding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _hCardBorder),
             ),
-        ],
-      );
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(action!,
+                    style: const TextStyle(
+                        color: AppColors.primary,
+                        fontSize: AppText.caption,
+                        fontWeight: FontWeight.w800)),
+                const SizedBox(width: 2),
+                const Icon(Icons.arrow_forward_ios_rounded,
+                    size: 10, color: AppColors.primary),
+              ],
+            ),
+          ),
+        ),
+    ],
+  );
 }
 
 class _Banner {
@@ -213,7 +214,7 @@ class _Banner {
 /// Banners are managed by the admin (Firestore `banners`).
 List<_Banner> get _banners => homeBanners
     .map((b) =>
-        _Banner(b.tag, b.title, b.subtitle, b.cta, Icons.phone_android_rounded))
+    _Banner(b.tag, b.title, b.subtitle, b.cta, Icons.phone_android_rounded))
     .toList();
 
 /// Home screen
@@ -303,12 +304,12 @@ class _HomeTabState extends State<HomeTab> {
   }
 
   void _openList([String? brand]) => Navigator.push(
-        context,
-        MaterialPageRoute(
-            builder: (_) => brand == null
-                ? const ProductListScreen()
-                : ProductListScreen(brand: brand)),
-      );
+    context,
+    MaterialPageRoute(
+        builder: (_) => brand == null
+            ? const ProductListScreen()
+            : ProductListScreen(brand: brand)),
+  );
 
   void _push(Widget screen) =>
       Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
@@ -384,11 +385,11 @@ class _HomeTabState extends State<HomeTab> {
                                 padding: EdgeInsets.zero,
                                 itemCount: popular.length,
                                 gridDelegate:
-                                    const SliverGridDelegateWithFixedCrossAxisCount(
-                                        crossAxisCount: 2,
-                                        mainAxisSpacing: 12,
-                                        crossAxisSpacing: 12,
-                                        mainAxisExtent: 200),
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 2,
+                                    mainAxisSpacing: 12,
+                                    crossAxisSpacing: 12,
+                                    mainAxisExtent: 200),
                                 itemBuilder: (c, i) => _scaledCard(popular[i]),
                               ),
                               // "Browse all" button at the end of the list
@@ -427,18 +428,18 @@ class _HomeTabState extends State<HomeTab> {
 
   /// Phone card scaled down a little so two fit nicely per row (same trick as before).
   Widget _scaledCard(Phone p) => LayoutBuilder(
-        builder: (context, box) {
-          const scale = 0.85;
-          return FittedBox(
-            fit: BoxFit.contain,
-            alignment: Alignment.topCenter,
-            child: SizedBox(
-                width: box.maxWidth / scale,
-                height: box.maxHeight / scale,
-                child: PhoneCard(phone: p)),
-          );
-        },
+    builder: (context, box) {
+      const scale = 0.85;
+      return FittedBox(
+        fit: BoxFit.contain,
+        alignment: Alignment.topCenter,
+        child: SizedBox(
+            width: box.maxWidth / scale,
+            height: box.maxHeight / scale,
+            child: PhoneCard(phone: p)),
       );
+    },
+  );
 
   // ---- Header: same layout as the Cart screen ----
   // Gradient avatar tile, greeting caption over "Hello, name", wishlist and notification tiles.
@@ -527,7 +528,7 @@ class _HomeTabState extends State<HomeTab> {
                               ? Icons.favorite_border_rounded
                               : Icons.favorite_rounded,
                           color:
-                              set.isEmpty ? AppColors.text : AppColors.danger,
+                          set.isEmpty ? AppColors.text : AppColors.danger,
                           size: 20,
                         ),
                       ),
@@ -695,14 +696,14 @@ class _HomeTabState extends State<HomeTab> {
                           child: CircleAvatar(
                               radius: 70,
                               backgroundColor:
-                                  Colors.white.withValues(alpha: 0.08))),
+                              Colors.white.withValues(alpha: 0.08))),
                       Positioned(
                           left: -40,
                           bottom: -50,
                           child: CircleAvatar(
                               radius: 55,
                               backgroundColor:
-                                  Colors.white.withValues(alpha: 0.05))),
+                              Colors.white.withValues(alpha: 0.05))),
                       Positioned(
                           right: 14,
                           bottom: 8,
@@ -840,14 +841,14 @@ class _HomeTabState extends State<HomeTab> {
     return Row(
       children: [
         item(Icons.grid_view_rounded, 'Categories', AppColors.primary,
-            () => _push(const CategoriesScreen())),
+                () => _push(const CategoriesScreen())),
         item(Icons.receipt_long_rounded, 'My Orders', AppColors.success,
-            () => _push(const OrdersScreen())),
+                () => _push(const OrdersScreen())),
         item(Icons.local_offer_rounded, 'Offers', AppColors.accent,
-            () => openProfileItem(context, 'Coupons & Offers'),
+                () => openProfileItem(context, 'Coupons & Offers'),
             badge: coupons.isEmpty ? null : '${coupons.length}'),
         item(Icons.headset_mic_rounded, 'Support', AppColors.primary,
-            () => openProfileItem(context, 'Help & Support')),
+                () => openProfileItem(context, 'Help & Support')),
       ],
     );
   }
@@ -912,7 +913,7 @@ class _HomeTabState extends State<HomeTab> {
                   ),
                   Container(
                     padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
                         color: AppColors.primary.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(20)),
@@ -938,7 +939,7 @@ class _HomeTabState extends State<HomeTab> {
       builder: (_, items, __) {
         if (items.isEmpty) return const SizedBox.shrink();
         final subtotal =
-            items.fold<int>(0, (s, e) => s + e.phone.price * e.qty);
+        items.fold<int>(0, (s, e) => s + e.phone.price * e.qty);
         final showProgress = deliveryChargeCfg > 0 && freeDeliveryAboveCfg > 0;
         final remaining = freeDeliveryAboveCfg - subtotal;
         final unlocked = remaining <= 0;
@@ -1106,7 +1107,7 @@ class _HomeTabState extends State<HomeTab> {
                         color: AppColors.primary.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(10)),
                     child:
-                        Icon(items[i].$1, size: 16, color: AppColors.primary),
+                    Icon(items[i].$1, size: 16, color: AppColors.primary),
                   ),
                   const SizedBox(width: 7),
                   Column(
@@ -1163,7 +1164,7 @@ class _HomeTabState extends State<HomeTab> {
             const SizedBox(height: 12),
             const Text('Loading phones...',
                 style:
-                    TextStyle(color: AppColors.muted, fontSize: AppText.small)),
+                TextStyle(color: AppColors.muted, fontSize: AppText.small)),
           ] else if (_productsError != null) ...[
             const Icon(Icons.cloud_off_rounded,
                 size: 36, color: AppColors.danger),
@@ -1199,7 +1200,7 @@ class _HomeTabState extends State<HomeTab> {
             const SizedBox(height: 4),
             const Text('Please check back later.',
                 style:
-                    TextStyle(color: AppColors.muted, fontSize: AppText.small)),
+                TextStyle(color: AppColors.muted, fontSize: AppText.small)),
           ],
         ],
       ),
@@ -1223,26 +1224,26 @@ class _SectionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(
-        children: [
-          Container(
-              width: 4,
-              height: 16,
-              decoration: BoxDecoration(
-                  color: AppColors.primary,
-                  borderRadius: BorderRadius.circular(4))),
-          const SizedBox(width: 8),
-          Expanded(
-              child: Text(title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      color: AppColors.text,
-                      fontSize: AppText.body,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.2))),
-          if (icon != null) Icon(icon, color: AppColors.accent, size: 18),
-        ],
-      );
+    children: [
+      Container(
+          width: 4,
+          height: 16,
+          decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: BorderRadius.circular(4))),
+      const SizedBox(width: 8),
+      Expanded(
+          child: Text(title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  color: AppColors.text,
+                  fontSize: AppText.body,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.2))),
+      if (icon != null) Icon(icon, color: AppColors.accent, size: 18),
+    ],
+  );
 }
 
 /// Profile screen
@@ -1259,7 +1260,133 @@ class ProfileTab extends StatefulWidget {
 }
 
 class _ProfileTabState extends State<ProfileTab> {
-  bool pushOn = true;
+  // Real data (no hardcoded text): live copy of users/{uid} and appConfig/store.
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _storeSub;
+  Map<String, dynamic> _doc = <String, dynamic>{};
+  Map<String, dynamic> _store = <String, dynamic>{};
+  DateTime? _memberSince;
+  bool _pushOn = false; // true when this phone's push token is saved on users/{uid}
+  bool _pushBusy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    profile.addListener(_healProfile);
+    _listenUser();
+    _listenStore();
+  }
+
+  @override
+  void dispose() {
+    profile.removeListener(_healProfile);
+    _userSub?.cancel();
+    _storeSub?.cancel();
+    super.dispose();
+  }
+
+  String _pick(List<dynamic> values) {
+    for (final v in values) {
+      final s = (v ?? '').toString().trim();
+      if (s.isNotEmpty) return s;
+    }
+    return '';
+  }
+
+  /// FIXED: name and phone were empty. Older profiles keep the name under `fullName`, and
+  /// initializeCustomerData() only looked at `name`. This fills the app-wide profile from the
+  /// real users/{uid} document (and the sign-in account) so every screen shows the saved values.
+  void _healProfile() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final name = _pick([_doc['name'], _doc['fullName'], _doc['displayName'], user.displayName]);
+    final phone = _pick([_doc['phone'], _doc['phoneNumber'], _doc['mobile'], user.phoneNumber]);
+    final email = _pick([_doc['email'], user.email, profile.value.email]);
+    final cur = profile.value;
+    if (cur.name == name && cur.phone == phone && cur.email == email) return;
+    profile.value = UserProfile(name: name, phone: phone, email: email);
+  }
+
+  void _listenUser() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    _userSub = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .snapshots()
+        .listen((snap) {
+      _doc = snap.data() ?? <String, dynamic>{};
+      final created = _doc['createdAt'];
+      DateTime? since = created is Timestamp ? created.toDate() : null;
+      since ??= user.metadata.creationTime;
+      _healProfile();
+      if (!mounted) return;
+      setState(() {
+        _memberSince = since;
+        _pushOn = _pick([_doc['fcmToken']]).isNotEmpty;
+      });
+    }, onError: (Object e) => debugPrint('PhoneHub profile listener: $e'));
+  }
+
+  void _listenStore() {
+    _storeSub = FirebaseFirestore.instance
+        .collection('appConfig')
+        .doc('store')
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      setState(() => _store = snap.data() ?? <String, dynamic>{});
+    }, onError: (Object e) => debugPrint('PhoneHub store config listener: $e'));
+  }
+
+  int get _returnDays {
+    final v = _store['returnDays'];
+    return v is num ? v.toInt() : 0;
+  }
+
+  String get _warranty {
+    final v = _store['warrantyPolicy'];
+    final s = v is String ? v.trim() : '';
+    return s.length > 160 ? '${s.substring(0, 157)}...' : s;
+  }
+
+  /// Push on/off is real now: it saves or removes this phone's token on users/{uid}.
+  Future<void> _togglePush(bool on) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || _pushBusy) return;
+    HapticFeedback.selectionClick();
+    setState(() {
+      _pushBusy = true;
+      _pushOn = on;
+    });
+    try {
+      if (on) {
+        await PushService.instance.register('users/${user.uid}');
+        final s = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+        final saved = _pick([s.data()?['fcmToken']]).isNotEmpty;
+        if (mounted) setState(() => _pushOn = saved);
+        if (!saved) _snack('Notifications are blocked for PhoneHub. Allow them in your phone settings.');
+      } else {
+        await PushService.instance.unregister();
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _pushOn = !on);
+        _snack('Could not change the notification setting. Please try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _pushBusy = false);
+    }
+  }
+
+  String _inviteText() {
+    final feats = <String>[];
+    if (_warranty.isNotEmpty) feats.add('warranty');
+    if (freeDeliveryAboveCfg > 0) feats.add('free delivery above ${rupee(freeDeliveryAboveCfg)}');
+    if (_returnDays > 0) feats.add('$_returnDays day returns');
+    return 'Check out PhoneHub - certified used phones'
+        '${feats.isEmpty ? '.' : ' with ${feats.join(', ')}.'}';
+  }
 
   void _push(Widget screen) =>
       Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
@@ -1273,47 +1400,45 @@ class _ProfileTabState extends State<ProfileTab> {
   // ---- Actions ----
   void _inviteFriends() {
     HapticFeedback.selectionClick();
-    Clipboard.setData(const ClipboardData(
-        text:
-            'Check out PhoneHub - certified used phones with warranty, free delivery and 7 day returns.'));
+    Clipboard.setData(ClipboardData(text: _inviteText()));
     _snack('Invite message copied. Paste it in any chat to share.');
   }
 
   void _showAbout() {
     Widget tile(IconData icon, String title, String text) => Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(9),
-                decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(12)),
-                child: Icon(icon, color: AppColors.primary, size: 19),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            fontSize: AppText.small,
-                            color: AppColors.text)),
-                    const SizedBox(height: 2),
-                    Text(text,
-                        style: const TextStyle(
-                            color: AppColors.muted,
-                            fontSize: AppText.caption,
-                            height: 1.35)),
-                  ],
-                ),
-              ),
-            ],
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(9),
+            decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12)),
+            child: Icon(icon, color: AppColors.primary, size: 19),
           ),
-        );
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: AppText.small,
+                        color: AppColors.text)),
+                const SizedBox(height: 2),
+                Text(text,
+                    style: const TextStyle(
+                        color: AppColors.muted,
+                        fontSize: AppText.caption,
+                        height: 1.35)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
 
     showModalBottomSheet(
       context: context,
@@ -1338,12 +1463,14 @@ class _ProfileTabState extends State<ProfileTab> {
                   style: TextStyle(
                       color: AppColors.muted, fontSize: AppText.small)),
               const SizedBox(height: 16),
-              tile(Icons.verified_user_outlined, '6 month warranty',
-                  'Every phone is quality checked and comes with warranty.'),
-              tile(Icons.local_shipping_outlined, 'Free delivery',
-                  'Delivery is free above the minimum order value.'),
-              tile(Icons.published_with_changes_rounded, '7 day returns',
-                  'Return or replace a phone within 7 days of delivery.'),
+              if (_warranty.isNotEmpty)
+                tile(Icons.verified_user_outlined, 'Warranty', _warranty),
+              if (freeDeliveryAboveCfg > 0)
+                tile(Icons.local_shipping_outlined, 'Free delivery',
+                    'Delivery is free on orders of ${rupee(freeDeliveryAboveCfg)} and above.'),
+              if (_returnDays > 0)
+                tile(Icons.published_with_changes_rounded, '$_returnDays day returns',
+                    'Return a phone within $_returnDays days of delivery.'),
             ],
           ),
         ),
@@ -1376,13 +1503,15 @@ class _ProfileTabState extends State<ProfileTab> {
               cart.value = [];
               // Really sign the customer out of Firebase, otherwise the
               // account stays logged in after "Log out".
+              // Remove the push token first (needs the signed-in user), then sign out.
+              await PushService.instance.unregister();
               await FirebaseAuth.instance.signOut();
               if (!mounted) return;
               // Back to the first screen, where the user picks a role.
               Navigator.pushAndRemoveUntil(
                   context,
                   MaterialPageRoute(builder: (_) => const RoleSelectScreen()),
-                  (r) => false);
+                      (r) => false);
             },
             child: const Text('Log out',
                 style: TextStyle(
@@ -1480,25 +1609,19 @@ class _ProfileTabState extends State<ProfileTab> {
                         icon: Icons.notifications_none_rounded,
                         color: AppColors.success,
                         title: 'Push notifications',
-                        subtitle: pushOn
+                        subtitle: _pushOn
                             ? 'On - order updates and offers'
                             : 'Off - you may miss order updates',
                         trailing: Transform.scale(
                           scale: 0.85,
                           child: Switch(
-                            value: pushOn,
+                            value: _pushOn,
                             activeColor: Colors.white,
                             activeTrackColor: AppColors.primary,
-                            onChanged: (v) {
-                              HapticFeedback.selectionClick();
-                              setState(() => pushOn = v);
-                            },
+                            onChanged: _pushBusy ? null : (v) => _togglePush(v),
                           ),
                         ),
-                        onTap: () {
-                          HapticFeedback.selectionClick();
-                          setState(() => pushOn = !pushOn);
-                        },
+                        onTap: () => _togglePush(!_pushOn),
                       ),
                       _row(
                         icon: Icons.notifications_active_outlined,
@@ -1724,10 +1847,12 @@ class _ProfileTabState extends State<ProfileTab> {
                         spacing: 6,
                         runSpacing: 6,
                         children: [
-                          _chip(Icons.verified_rounded, 'Verified',
-                              AppColors.success),
-                          _chip(Icons.workspace_premium_rounded,
-                              'Member since 2025', AppColors.primary),
+                          if (FirebaseAuth.instance.currentUser?.emailVerified == true)
+                            _chip(Icons.verified_rounded, 'Verified',
+                                AppColors.success),
+                          if (_memberSince != null)
+                            _chip(Icons.workspace_premium_rounded,
+                                'Member since ${_memberSince!.year}', AppColors.primary),
                         ],
                       ),
                     ],
@@ -1747,7 +1872,7 @@ class _ProfileTabState extends State<ProfileTab> {
                       '${list.length}',
                       'Orders',
                       Icons.receipt_long_rounded,
-                      () => _push(const OrdersScreen())),
+                          () => _push(const OrdersScreen())),
                 ),
                 Container(width: 1, height: 34, color: _pDivider),
                 ValueListenableBuilder<Set<String>>(
@@ -1756,11 +1881,11 @@ class _ProfileTabState extends State<ProfileTab> {
                       '${set.length}',
                       'Wishlist',
                       Icons.favorite_rounded,
-                      () => _push(const WishlistScreen())),
+                          () => _push(const WishlistScreen())),
                 ),
                 Container(width: 1, height: 34, color: _pDivider),
                 _stat('${coupons.length}', 'Coupons', Icons.local_offer_rounded,
-                    () => openProfileItem(context, 'Coupons & Offers')),
+                        () => openProfileItem(context, 'Coupons & Offers')),
               ],
             ),
           ),
@@ -1774,14 +1899,14 @@ class _ProfileTabState extends State<ProfileTab> {
                         Icons.edit_outlined,
                         'Edit profile',
                         AppColors.primary,
-                        () => _push(const EditProfileScreen()))),
+                            () => _push(const EditProfileScreen()))),
                 Container(width: 1, height: 22, color: _pDivider),
                 Expanded(
                     child: _action(
                         Icons.location_on_outlined,
                         'Addresses',
                         AppColors.accent,
-                        () => openProfileItem(context, 'Saved Addresses'))),
+                            () => openProfileItem(context, 'Saved Addresses'))),
               ],
             ),
           ),
@@ -1808,8 +1933,8 @@ class _ProfileTabState extends State<ProfileTab> {
           final missing = !hasName
               ? 'Add your name'
               : !hasPhone
-                  ? 'Add your phone number'
-                  : 'Add a delivery address';
+              ? 'Add your phone number'
+              : 'Add a delivery address';
           final c = AppColors.primary;
 
           return GestureDetector(
@@ -1974,42 +2099,42 @@ class _ProfileTabState extends State<ProfileTab> {
 
   // Tinted chip (same style as the status chip on the Orders card).
   Widget _chip(IconData icon, String text, Color c) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: BoxDecoration(
-          color: c.withValues(alpha: 0.10),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: c.withValues(alpha: 0.25)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: c, size: 12),
-            const SizedBox(width: 4),
-            Text(text,
-                style: TextStyle(
-                    color: c,
-                    fontSize: AppText.caption,
-                    fontWeight: FontWeight.w800)),
-          ],
-        ),
-      );
-
-  Widget _badge(String text, Color color) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.10),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: color.withValues(alpha: 0.25)),
-        ),
-        child: Text(text,
+    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+    decoration: BoxDecoration(
+      color: c.withValues(alpha: 0.10),
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: c.withValues(alpha: 0.25)),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, color: c, size: 12),
+        const SizedBox(width: 4),
+        Text(text,
             style: TextStyle(
-                color: color,
+                color: c,
                 fontSize: AppText.caption,
                 fontWeight: FontWeight.w800)),
-      );
+      ],
+    ),
+  );
+
+  Widget _badge(String text, Color color) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: 0.10),
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: color.withValues(alpha: 0.25)),
+    ),
+    child: Text(text,
+        style: TextStyle(
+            color: color,
+            fontSize: AppText.caption,
+            fontWeight: FontWeight.w800)),
+  );
 
   Widget _action(
-          IconData icon, String label, Color color, VoidCallback onTap) =>
+      IconData icon, String label, Color color, VoidCallback onTap) =>
       InkWell(
         borderRadius: BorderRadius.circular(18),
         onTap: onTap,

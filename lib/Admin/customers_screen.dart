@@ -973,21 +973,7 @@ class _BrandsScreenState extends State<BrandsScreen> {
                 ),
               ),
 
-              // ---- stats ----
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
-                child: Row(
-                  children: [
-                    _bStat(Icons.apartment_rounded, AC.primary, '${all.length}', 'Brands'),
-                    const SizedBox(width: 8),
-                    _bStat(Icons.visibility_rounded, AC.success, '${counts['Active']}', 'Visible'),
-                    const SizedBox(width: 8),
-                    _bStat(Icons.visibility_off_rounded, AC.muted, '${counts['Hidden']}', 'Hidden'),
-                    const SizedBox(width: 8),
-                    _bStat(Icons.smartphone_rounded, AC.warning, '${store.phones.length}', 'Phones'),
-                  ],
-                ),
-              ),
+             
 
               // ---- filter pills ----
               SizedBox(

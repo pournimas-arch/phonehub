@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -7,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:phonehub/customer/forgot_password.dart';
 import 'package:phonehub/customer/register_screen.dart';
 import 'package:phonehub/app_text.dart';
+import 'package:phonehub/push_service.dart';
 
 import 'home_screen.dart';
 import 'theme.dart';
@@ -186,6 +188,9 @@ class _LoginScreenState extends State<LoginScreen>
         // Preserve the existing authentication fallback.
         // Configure Firestore security rules appropriately.
       }
+
+      // Push notifications: save this phone's token on users/{uid}.fcmToken.
+      unawaited(PushService.instance.register('users/${user.uid}'));
 
       profile.value = UserProfile(
         name: name.isNotEmpty
