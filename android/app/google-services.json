@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "248585037937",
+    "firebase_url": "https://phonehub-f7587-default-rtdb.firebaseio.com",
+    "project_id": "phonehub-f7587",
+    "storage_bucket": "phonehub-f7587.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:248585037937:android:12bd2490b113474ad8d3d0",
+        "android_client_info": {
+          "package_name": "com.example.phone_hub"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIwZ13Y_4laJLnhlYJjIIETYyM6BY9kIU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:248585037937:android:022de16257a963c6d8d3d0",
+        "android_client_info": {
+          "package_name": "com.example.phonehub"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIwZ13Y_4laJLnhlYJjIIETYyM6BY9kIU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
