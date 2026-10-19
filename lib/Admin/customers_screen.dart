@@ -973,7 +973,7 @@ class _BrandsScreenState extends State<BrandsScreen> {
                 ),
               ),
 
-             
+
 
               // ---- filter pills ----
               SizedBox(
@@ -1386,6 +1386,23 @@ class _BrandDashPainter extends CustomPainter {
 // Add / edit brand sheet
 // ---------------------------------------------------------------------------
 
+/// Brand name rules: spaces cleaned, 2 to 30 characters, letters / digits / space and . & ' -
+/// only, at least one letter, and the name must not already exist.
+String _cleanBrandName(String raw) => raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+String? _validateBrandName(String raw, {Brand? editing}) {
+  final n = _cleanBrandName(raw);
+  if (n.isEmpty) return 'Enter a brand name';
+  if (n.length < 2) return 'Brand name must be at least 2 characters';
+  if (n.length > 30) return 'Brand name can be at most 30 characters';
+  if (!RegExp(r"^[A-Za-z0-9 .&'-]+$").hasMatch(n)) return "Use only letters, numbers, space and . & ' -";
+  if (!RegExp(r'[A-Za-z]').hasMatch(n)) return 'Brand name must contain at least one letter';
+  if (RegExp(r"^[.&'-]|[.&'-]$").hasMatch(n)) return 'Brand name cannot start or end with a symbol';
+  final dup = store.brands.any((b) => b != editing && b.name.toLowerCase() == n.toLowerCase());
+  if (dup) return 'This brand already exists';
+  return null;
+}
+
 class _BrandEditor extends StatefulWidget {
   final Brand? brand;
   const _BrandEditor({required this.brand});
@@ -1422,6 +1439,10 @@ class _BrandEditorState extends State<_BrandEditor> {
             controller: _name,
             autofocus: widget.brand == null,
             textCapitalization: TextCapitalization.words,
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r"[A-Za-z0-9 .&'-]")),
+              LengthLimitingTextInputFormatter(30),
+            ],
             onChanged: (_) => setState(() => _error = null),
             style: const TextStyle(fontSize: _bBody + 1, fontWeight: FontWeight.w600),
             decoration: InputDecoration(
@@ -1455,16 +1476,12 @@ class _BrandEditorState extends State<_BrandEditor> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(46), textStyle: const TextStyle(fontSize: _bBody + 2, fontWeight: FontWeight.w800)),
             onPressed: () {
-              final n = _name.text.trim();
-              if (n.isEmpty) {
-                setState(() => _error = 'Enter a brand name');
+              final err = _validateBrandName(_name.text, editing: widget.brand);
+              if (err != null) {
+                setState(() => _error = err);
                 return;
               }
-              final dup = store.brands.any((b) => b != widget.brand && b.name.toLowerCase() == n.toLowerCase());
-              if (dup) {
-                setState(() => _error = 'This brand already exists');
-                return;
-              }
+              final n = _cleanBrandName(_name.text);
               Navigator.pop(context, (name: n, color: _color));
             },
             child: Text(widget.brand == null ? 'Add brand' : 'Save changes'),

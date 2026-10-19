@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:phonehub/customer/checkout_ui.dart';
 import 'widgets.dart';
 import 'theme.dart';
@@ -74,8 +75,35 @@ class _CartScreenState extends State<CartScreen> {
     return list.isEmpty ? null : list.first;
   }
 
+  /// Checks the typed coupon code BEFORE it is looked up. Same rules the admin uses when a
+  /// coupon is created (letters, digits, - and _, 3 to 20 characters, at least one letter).
+  String? _validateCouponInput(String raw, int subtotal) {
+    final t = raw.trim().toUpperCase();
+    if (subtotal <= 0) return 'Your cart is empty. Add a phone before applying a coupon.';
+    if (t.isEmpty) return 'Enter a coupon code or choose one of the available offers.';
+    if (t.length < 3) return 'Coupon code must be at least 3 characters.';
+    if (t.length > 20) return 'Coupon code can be at most 20 characters.';
+    if (!RegExp(r'^[A-Z0-9_-]+$').hasMatch(t)) return 'Use only letters, numbers, - and _ in the coupon code.';
+    if (!RegExp(r'[A-Z]').hasMatch(t)) return 'A coupon code must contain at least one letter.';
+    if (RegExp(r'^[-_]|[-_]$').hasMatch(t)) return 'Coupon code cannot start or end with - or _.';
+    if (applied != null && applied!.code == t) return 'This coupon is already applied.';
+    return null;
+  }
+
   void _apply(int subtotal, int delivery) {
     FocusScope.of(context).unfocus();
+    final inputError = _validateCouponInput(_coupon.text, subtotal);
+    if (inputError != null) {
+      setState(() {
+        // keep an already applied coupon when the customer only re-taps Apply on the same code
+        if (applied == null || applied!.code != _coupon.text.trim().toUpperCase()) {
+          applied = null;
+          couponOk = false;
+        }
+        couponMsg = inputError;
+      });
+      return;
+    }
     final c = findCoupon(_coupon.text);
     setState(() {
       if (c == null) {
@@ -341,6 +369,14 @@ class _CartScreenState extends State<CartScreen> {
                     child: TextField(
                       controller: _coupon,
                       textCapitalization: TextCapitalization.characters,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp('[A-Za-z0-9_-]')),
+                        LengthLimitingTextInputFormatter(20),
+                      ],
+                      onChanged: (_) {
+                        // remove an old error message as soon as the customer edits the code
+                        if (applied == null && couponMsg != null) setState(() => couponMsg = null);
+                      },
                       style: const TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w700, color: AppColors.text),
                       decoration: InputDecoration(
                         hintText: 'Enter coupon code',

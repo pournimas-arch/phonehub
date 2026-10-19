@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart' show FirebaseException;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:phonehub/Admin/phone_extras.dart';
 
@@ -293,7 +294,9 @@ class Refund {
   final DateTime date;
   /// 'return' when the customer asked for a return of a delivered order, '' for a cancelled-order refund.
   final String type;
-  Refund(this.id, this.orderId, this.amount, this.reason, this.status, this.date, {this.type = ''});
+  /// Why the admin rejected the request (shown to the customer in the notification). Empty otherwise.
+  String adminNote;
+  Refund(this.id, this.orderId, this.amount, this.reason, this.status, this.date, {this.type = '', this.adminNote = ''});
 }
 
 class ChatMsg {
@@ -566,7 +569,7 @@ class AdminStore extends ChangeNotifier {
   Refund _refundFrom(DocumentSnapshot<Map<String, dynamic>> d) {
     final m = d.data() ?? <String, dynamic>{};
     return Refund('${m['refNo'] ?? d.id}', '${m['orderId'] ?? ''}', _int(m['amount']), '${m['reason'] ?? ''}',
-        '${m['status'] ?? 'Requested'}', _date(m['createdAt']), type: '${m['type'] ?? ''}');
+        '${m['status'] ?? 'Requested'}', _date(m['createdAt']), type: '${m['type'] ?? ''}', adminNote: '${m['adminNote'] ?? ''}');
   }
 
   PartnerPayout _payoutFrom(DocumentSnapshot<Map<String, dynamic>> d) {
@@ -1888,8 +1891,9 @@ class AdminStore extends ChangeNotifier {
     }());
   }
 
-  void setRefund(Refund r, String status) {
+  void setRefund(Refund r, String status, {String note = ''}) {
     r.status = status;
+    if (note.isNotEmpty) r.adminNote = note;
     final o = orderById(r.orderId);
     final isReturn = r.type == 'return';
     if (o != null) {
@@ -1899,7 +1903,11 @@ class AdminStore extends ChangeNotifier {
     notifyListeners();
     unawaited(() async {
       try {
-        await _db.collection('refunds').doc('RF_${r.orderId}').update({'status': status, 'updatedAt': FieldValue.serverTimestamp()});
+        await _db.collection('refunds').doc('RF_${r.orderId}').update({
+          'status': status,
+          if (note.isNotEmpty) 'adminNote': note,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
         if (o != null) {
           // Keep the order itself in step so the customer / payments screens show the real state.
           final orderUpdate = <String, dynamic>{
@@ -1910,7 +1918,7 @@ class AdminStore extends ChangeNotifier {
             orderUpdate['updatedAt'] = FieldValue.serverTimestamp();
             await _db.collection('orders').doc(o.id).update(orderUpdate);
           }
-          await _notify(o.customerId, 'Refund $status • ${o.id}', 'Your refund of ₹${r.amount} is now: $status.', 'refund');
+          await _notify(o.customerId, 'Refund $status • ${o.id}', 'Your refund of ₹${r.amount} is now: $status.${note.isNotEmpty ? ' Reason: $note' : ''}', 'refund');
         }
       } catch (e) {
         _fail(e);
@@ -1918,13 +1926,59 @@ class AdminStore extends ChangeNotifier {
     }());
   }
 
-  void addPhone(Phone p) {
-    phones.insert(0, p);
-    notifyListeners();
-    unawaited(_createProduct(p));
+  // -------------------------------------------------------------------------
+  // Add / edit phone. The Add / Edit phone screen WAITS for these and shows the real result
+  // (they return null when saved, or a readable error text).
+  // -------------------------------------------------------------------------
+
+  /// Firestore allows only 1 MiB for one document. Photos are saved inside the product, so the
+  /// whole product is kept a little below that limit.
+  static const int maxProductDocBytes = 900 * 1024;
+
+  /// Approximate size of this phone's Firestore document in bytes.
+  int productDocBytes(Phone p) => utf8.encode(_enc(_phoneMap(p))).length;
+
+  /// Null when the phone is small enough to be saved, otherwise a readable message.
+  String? productSizeError(Phone p) {
+    final size = productDocBytes(p);
+    if (size <= maxProductDocBytes) return null;
+    return 'This phone is too large to save (${(size / 1024).round()} KB, limit ${(maxProductDocBytes / 1024).round()} KB). Remove a photo or shorten the long texts.';
   }
 
-  Future<void> _createProduct(Phone p) async {
+  String _saveErrorText(Object e) {
+    if (e is FirebaseException) {
+      switch (e.code) {
+        case 'permission-denied':
+        case 'unauthenticated':
+          return 'You are not allowed to save products. Please log in as the admin again.';
+        case 'unavailable':
+        case 'deadline-exceeded':
+          return 'No internet connection. Check your network and try again.';
+        case 'invalid-argument':
+        case 'resource-exhausted':
+          return 'This phone has too much data to save. Remove a photo or shorten the long texts.';
+      }
+    }
+    return 'Could not save the phone. Please try again.';
+  }
+
+  /// Adds a new phone and waits until Firestore has accepted it.
+  /// Returns null on success, or an error text (the phone is then NOT kept in the list when
+  /// [reportToStore] is false). Other callers (like Duplicate) can keep using it without waiting:
+  /// with the default [reportToStore] = true a failed save is retried by the next sync and
+  /// shown through [loadError], exactly as before.
+  Future<String?> addPhone(Phone p, {bool reportToStore = true}) async {
+    final sizeError = productSizeError(p);
+    if (sizeError != null) {
+      if (reportToStore) _fail(sizeError);
+      return sizeError;
+    }
+    phones.insert(0, p);
+    notifyListeners();
+    return _createProduct(p, reportToStore: reportToStore);
+  }
+
+  Future<String?> _createProduct(Phone p, {bool reportToStore = true}) async {
     final map = _phoneMap(p);
     _sig['phone:${p.id}'] = _enc(map);
     _lastStock[p.id] = p.stock;
@@ -1935,10 +1989,40 @@ class AdminStore extends ChangeNotifier {
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+      return null;
     } catch (e) {
       _sig.remove('phone:${p.id}'); // will be retried by the next sync
       _lastStock.remove(p.id);
-      _fail(e);
+      if (reportToStore) {
+        _fail(e);
+      } else {
+        phones.remove(p); // the form shows the error and stays open, so do not keep a phone that is not saved
+        notifyListeners();
+        debugPrint('PhoneHub admin: adding ${p.id} failed: $e');
+      }
+      return _saveErrorText(e);
+    }
+  }
+
+  /// Saves an EDITED phone (the form has already changed the [Phone] object) and waits for
+  /// Firestore. Returns null on success or an error text; on an error the form puts the old
+  /// values back. Stock is written only when the admin changed it, so stock that customer
+  /// orders have lowered in the meantime is not overwritten.
+  Future<String?> saveEditedPhone(Phone p) async {
+    final sizeError = productSizeError(p);
+    if (sizeError != null) return sizeError;
+    final map = _phoneMap(p);
+    try {
+      final data = <String, dynamic>{...map, 'updatedAt': FieldValue.serverTimestamp()};
+      if (_lastStock[p.id] != p.stock) data['stock'] = p.stock;
+      await _db.collection('products').doc(p.id).set(data, SetOptions(merge: true));
+      _sig['phone:${p.id}'] = _enc(map);
+      _lastStock[p.id] = p.stock;
+      notifyListeners();
+      return null;
+    } catch (e) {
+      debugPrint('PhoneHub admin: saving ${p.id} failed: $e');
+      return _saveErrorText(e);
     }
   }
 

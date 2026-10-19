@@ -27,7 +27,52 @@ String _greeting() {
   return 'Good evening';
 }
 
-bool _validEmail(String? v) => v != null && RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v.trim());
+final RegExp _emailFormat = RegExp(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$');
+
+bool _validEmail(String? v) {
+  if (v == null) return false;
+  final s = v.trim();
+  if (s.isEmpty || s.length > 254 || s.contains('..') || s.contains(' ')) return false;
+  final local = s.split('@').first;
+  if (local.length > 64 || local.startsWith('.') || local.endsWith('.')) return false;
+  return _emailFormat.hasMatch(s);
+}
+
+final RegExp _nameFormat = RegExp(r"^\p{L}[\p{L}\p{M} .'\-]*$", unicode: true);
+
+String? _checkAdminName(String? v) {
+  final s = (v ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
+  if (s.isEmpty) return 'Enter your full name';
+  if (s.length < 2) return 'Name is too short';
+  if (s.length > 50) return 'Name can be at most 50 characters';
+  if (!_nameFormat.hasMatch(s)) return 'Use letters only (spaces, . \' - allowed)';
+  if (RegExp(r'(.)\1{3,}').hasMatch(s)) return 'Enter your real name';
+  return null;
+}
+
+String? _checkAdminMobile(String? v) {
+  final d = v ?? '';
+  if (d.isEmpty) return 'Enter your mobile number';
+  if (!RegExp(r'^[0-9]{10}$').hasMatch(d)) return 'Enter a 10 digit mobile number';
+  if (!RegExp(r'^[6-9]').hasMatch(d)) return 'Mobile number must start with 6, 7, 8 or 9';
+  if (RegExp(r'^(\d)\1{9}$').hasMatch(d)) return 'Enter a real mobile number';
+  return null;
+}
+
+String? _checkAdminPassword(String? v, {String name = '', String email = ''}) {
+  final p = v ?? '';
+  if (p.isEmpty) return 'Create a password';
+  if (p.length < 8) return 'Use at least 8 characters';
+  if (p.length > 64) return 'Password can be at most 64 characters';
+  if (RegExp(r'\s').hasMatch(p)) return 'Password cannot contain spaces';
+  if (!(RegExp(r'[A-Za-z]').hasMatch(p) && RegExp(r'[0-9]').hasMatch(p))) return 'Include letters and numbers';
+  if (RegExp(r'^(.)\1+$').hasMatch(p)) return 'Password is too easy to guess';
+  const common = ['password1', 'password123', 'admin123', 'admin1234', 'qwerty123', 'abcd1234', '12345678a', 'welcome123', 'phonehub123'];
+  if (common.contains(p.toLowerCase())) return 'Password is too common. Choose another';
+  final local = email.trim().split('@').first.toLowerCase();
+  if (local.length >= 4 && p.toLowerCase().contains(local)) return 'Password should not contain your email name';
+  return null;
+}
 
 /// Soft translucent circles (used on the gradient header / splash).
 class _Bubbles extends StatelessWidget {
@@ -472,6 +517,32 @@ Widget _outlineButton(double s, String text, IconData icon, VoidCallback? onPres
   ),
 );
 
+// GOOGLE: "Continue with Google" button (white, outlined, shows a spinner while loading).
+Widget _googleButton(double s, VoidCallback? onPressed, bool loading) => SizedBox(
+  width: double.infinity,
+  height: 50 * s,
+  child: OutlinedButton(
+    onPressed: loading ? null : onPressed,
+    style: OutlinedButton.styleFrom(
+      foregroundColor: AC.text,
+      backgroundColor: Colors.white,
+      side: const BorderSide(color: AC.border),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16 * s)),
+    ),
+    child: loading
+        ? SizedBox(width: 20 * s, height: 20 * s, child: const CircularProgressIndicator(strokeWidth: 2.4))
+        : Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        // Replace with the official logo: Image.asset('assets/google_g.png', height: 20 * s)
+        Text('G', style: TextStyle(fontSize: 20 * s, fontWeight: FontWeight.w800, color: const Color(0xFF4285F4))),
+        SizedBox(width: 10 * s),
+        Text('Continue with Google', style: TextStyle(fontSize: AppText.body * s, fontWeight: FontWeight.w700)),
+      ],
+    ),
+  ),
+);
+
 TextButton _linkButton(double s, String text, VoidCallback? onPressed) => TextButton(
   onPressed: onPressed,
   style: TextButton.styleFrom(padding: EdgeInsets.symmetric(horizontal: 6 * s), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
@@ -676,7 +747,7 @@ class _AdminSplashScreenState extends State<AdminSplashScreen> with SingleTicker
 // Login
 // ---------------------------------------------------------------------------
 
-/// Admin login (email + password).
+/// Admin login (email + password, or Google).
 class AdminLoginScreen extends StatefulWidget {
   const AdminLoginScreen({super.key});
 
@@ -695,6 +766,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> with SingleTickerPr
   late final AnimationController _shake = AnimationController(vsync: this, duration: const Duration(milliseconds: 450));
   Timer? _lockTimer;
   bool _hide = true, _loading = false, _remember = true, _checking = false;
+  bool _googleLoading = false; // GOOGLE
   String? _error;
   int _fails = 0, _lockLeft = 0;
 
@@ -763,6 +835,27 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> with SingleTickerPr
     if (_fails >= _maxFails) _startLock();
   }
 
+  // GOOGLE: sign in with a Google account (admin account only).
+  Future<void> _googleLogin() async {
+    if (_lockLeft > 0 || _loading || _googleLoading) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _googleLoading = true;
+      _error = null;
+    });
+    final err = await _svc.loginWithGoogle(remember: _remember);
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const AdminShell()));
+      return;
+    }
+    if (err != 'cancelled') _shake.forward(from: 0);
+    setState(() {
+      _googleLoading = false;
+      _error = err == 'cancelled' ? null : err; // closing the popup shows no error
+    });
+  }
+
   Future<void> _openRegister() async {
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AdminRegisterScreen()));
     if (mounted) setState(() {});
@@ -812,6 +905,10 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> with SingleTickerPr
                 autofillHints: const [AutofillHints.username, AutofillHints.email],
                 onFieldSubmitted: (_) => FocusScope.of(context).nextFocus(),
                 style: TextStyle(fontSize: AppText.body * s, color: AC.text),
+                inputFormatters: [
+                  LengthLimitingTextInputFormatter(254),
+                  FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                ],
                 validator: (v) => _validEmail(v) ? null : 'Enter a valid email',
                 decoration: _fieldDeco(s, 'admin@yourstore.com', Icons.email_outlined),
               ),
@@ -870,6 +967,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> with SingleTickerPr
             SizedBox(height: 16 * s),
             if (errText != null) _errorBox(s, errText),
             _PrimaryButton(
+
               s: s,
               label: locked ? 'Locked · ${_lockLeft}s' : 'Login',
               icon: locked ? Icons.lock_clock_rounded : Icons.arrow_forward_rounded,
@@ -877,6 +975,13 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> with SingleTickerPr
               onPressed: locked ? null : _login,
             ),
             SizedBox(height: 20 * s),
+            // GOOGLE: shown only when an admin exists and the form is not locked.
+            if (!locked) ...[
+              _dividerLabel(s, 'or'),
+              SizedBox(height: 14 * s),
+              _googleButton(s, _googleLogin, _googleLoading),
+              SizedBox(height: 20 * s),
+            ],
             if (_svc.canRegister) ...[
               Container(
                 width: double.infinity,
@@ -980,7 +1085,7 @@ class _AdminRegisterScreenState extends State<AdminRegisterScreen> {
 
     setState(() => _loading = true);
     await Future.delayed(const Duration(milliseconds: 600));
-    final err = await _svc.register(name: _name.text, email: _email.text, phone: _phone.text, password: _pass.text);
+    final err = await _svc.register(name: _name.text.trim().replaceAll(RegExp(r'\s+'), ' '), email: _email.text.trim(), phone: _phone.text, password: _pass.text);
     if (!mounted) return;
     if (err != null) {
       setState(() {
@@ -1074,7 +1179,11 @@ class _AdminRegisterScreenState extends State<AdminRegisterScreen> {
                 autofillHints: const [AutofillHints.name],
                 onFieldSubmitted: (_) => FocusScope.of(context).nextFocus(),
                 style: TextStyle(fontSize: AppText.body * s, color: AC.text),
-                validator: (v) => (v == null || v.trim().length < 2) ? 'Enter your full name' : null,
+                inputFormatters: [
+                  LengthLimitingTextInputFormatter(50),
+                  FilteringTextInputFormatter.allow(RegExp(r"[\p{L}\p{M} .'\-]", unicode: true)),
+                ],
+                validator: _checkAdminName,
                 decoration: _fieldDeco(s, 'Enter your full name', Icons.person_outline_rounded),
               ),
             ),
@@ -1089,6 +1198,10 @@ class _AdminRegisterScreenState extends State<AdminRegisterScreen> {
                 autofillHints: const [AutofillHints.email],
                 onFieldSubmitted: (_) => FocusScope.of(context).nextFocus(),
                 style: TextStyle(fontSize: AppText.body * s, color: AC.text),
+                inputFormatters: [
+                  LengthLimitingTextInputFormatter(254),
+                  FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                ],
                 validator: (v) => _validEmail(v) ? null : 'Enter a valid email',
                 decoration: _fieldDeco(s, 'admin@yourstore.com', Icons.email_outlined),
               ),
@@ -1106,7 +1219,7 @@ class _AdminRegisterScreenState extends State<AdminRegisterScreen> {
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 onFieldSubmitted: (_) => FocusScope.of(context).nextFocus(),
                 style: TextStyle(fontSize: AppText.body * s, color: AC.text),
-                validator: (v) => (v == null || !RegExp(r'^[0-9]{10}$').hasMatch(v)) ? 'Enter a 10 digit mobile number' : null,
+                validator: _checkAdminMobile,
                 decoration: _fieldDeco(
                   s,
                   '10 digit mobile number',
@@ -1129,11 +1242,11 @@ class _AdminRegisterScreenState extends State<AdminRegisterScreen> {
                 onChanged: (_) => setState(() {}),
                 onFieldSubmitted: (_) => FocusScope.of(context).nextFocus(),
                 style: TextStyle(fontSize: AppText.body * s, color: AC.text),
-                validator: (v) {
-                  if (v == null || v.length < 8) return 'Use at least 8 characters';
-                  if (!(RegExp(r'[A-Za-z]').hasMatch(v) && RegExp(r'[0-9]').hasMatch(v))) return 'Include letters and numbers';
-                  return null;
-                },
+                inputFormatters: [
+                  LengthLimitingTextInputFormatter(64),
+                  FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                ],
+                validator: (v) => _checkAdminPassword(v, name: _name.text, email: _email.text),
                 decoration: _fieldDeco(
                   s,
                   'Create a strong password',
@@ -1157,7 +1270,11 @@ class _AdminRegisterScreenState extends State<AdminRegisterScreen> {
                 autofillHints: const [AutofillHints.newPassword],
                 onFieldSubmitted: (_) => _register(),
                 style: TextStyle(fontSize: AppText.body * s, color: AC.text),
-                validator: (v) => v != _pass.text ? 'Passwords do not match' : null,
+                inputFormatters: [
+                  LengthLimitingTextInputFormatter(64),
+                  FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                ],
+                validator: (v) => (v == null || v.isEmpty) ? 'Re-enter your password' : (v != _pass.text ? 'Passwords do not match' : null),
                 decoration: _fieldDeco(
                   s,
                   'Re-enter your password',
@@ -1364,7 +1481,7 @@ class _AdminForgotPasswordScreenState extends State<AdminForgotPasswordScreen> {
     if (_busy) return;
     FocusScope.of(context).unfocus();
     final code = _otp.text.trim();
-    if (code.length != _otpLength) {
+    if (code.length != _otpLength || !RegExp(r'^[0-9]+$').hasMatch(code)) {
       setState(() => _err = 'Enter the $_otpLength digit OTP');
       return;
     }
@@ -1390,12 +1507,14 @@ class _AdminForgotPasswordScreenState extends State<AdminForgotPasswordScreen> {
     if (_busy) return;
     FocusScope.of(context).unfocus();
     final p = _pass.text;
-    if (p.length < 8) {
-      setState(() => _err = 'Use at least 8 characters');
+    // same password rules as admin registration (length, spaces, easy / common passwords, email name)
+    final passErr = _checkAdminPassword(p, email: _sentTo);
+    if (passErr != null) {
+      setState(() => _err = passErr);
       return;
     }
-    if (!(RegExp(r'[A-Za-z]').hasMatch(p) && RegExp(r'[0-9]').hasMatch(p))) {
-      setState(() => _err = 'Include letters and numbers');
+    if (_confirm.text.isEmpty) {
+      setState(() => _err = 'Re-enter your password');
       return;
     }
     if (p != _confirm.text) {
@@ -1478,6 +1597,10 @@ class _AdminForgotPasswordScreenState extends State<AdminForgotPasswordScreen> {
           controller: _email,
           keyboardType: TextInputType.emailAddress,
           textInputAction: TextInputAction.done,
+          inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\s')), LengthLimitingTextInputFormatter(254)],
+          onChanged: (_) {
+            if (_err != null) setState(() => _err = null);
+          },
           onSubmitted: (_) => _sendOtp(),
           style: TextStyle(fontSize: AppText.body * s, color: AC.text),
           decoration: _fieldDeco(s, 'Enter your admin email', Icons.email_outlined),
@@ -1557,6 +1680,7 @@ class _AdminForgotPasswordScreenState extends State<AdminForgotPasswordScreen> {
           controller: _pass,
           obscureText: _hide,
           textInputAction: TextInputAction.next,
+          inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\s')), LengthLimitingTextInputFormatter(64)],
           onChanged: (_) {
             if (_err != null) setState(() => _err = null);
           },
@@ -1572,6 +1696,7 @@ class _AdminForgotPasswordScreenState extends State<AdminForgotPasswordScreen> {
           controller: _confirm,
           obscureText: _hide2,
           textInputAction: TextInputAction.done,
+          inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\s')), LengthLimitingTextInputFormatter(64)],
           onSubmitted: (_) => _resetPassword(),
           onChanged: (_) {
             if (_err != null) setState(() => _err = null);

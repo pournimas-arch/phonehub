@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// The admin of the app.
@@ -28,12 +29,20 @@ class AdminAuthService {
 
   static const _kRemember = 'admin_remember_email';
 
+  // Web client ID from Firebase Console -> Authentication -> Sign-in method ->
+  // Google -> Web SDK configuration (looks like 123456-abc.apps.googleusercontent.com).
+  // Leave empty to try without it; fill it in if Google shows a configuration error.
+  static const String _webClientId = '248585037937-bjeobrafslelg88hime4c7qncuq6i5sv.apps.googleusercontent.com';
+
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
   // Default region is us-central1. If you deploy your functions to another
   // region (e.g. Mumbai), use: FirebaseFunctions.instanceFor(region: 'asia-south1')
   final FirebaseFunctions _fn = FirebaseFunctions.instance;
+
+  // Google Sign-In (opens the "Choose an account" email picker).
+  bool _googleReady = false; // Google Sign-In is initialised only once
 
   SharedPreferences? _prefs;
   bool? _adminExists; // null = not checked yet
@@ -102,6 +111,7 @@ class AdminAuthService {
     }
   }
 
+
   Future<AdminAccount?> _loadAdmin(User user) async {
     final doc = await _db.doc('admins/${user.uid}').get();
     if (!doc.exists) return null;
@@ -115,7 +125,6 @@ class AdminAuthService {
   }
 
   // ---- Register (only the first time) --------------------------------------
-
   /// Returns an error message, or null when the admin account was created.
   Future<String?> register({required String name, required String email, required String phone, required String password}) async {
     UserCredential? cred;
@@ -131,7 +140,7 @@ class AdminAuthService {
 
       final batch = _db.batch();
       batch.set(_db.doc('meta/admin'), {'uid': user.uid, 'createdAt': FieldValue.serverTimestamp()});
-      batch.set(_db.doc('admins/${user.uid}'), {
+      batch.set(_db.doc('admins/${user.uid}'),{
         'name': name.trim(),
         'email': email.trim(),
         'phone': phone.trim(),
@@ -179,6 +188,63 @@ class AdminAuthService {
       return e.message ?? 'Something went wrong. Please try again';
     } catch (_) {
       return 'Something went wrong. Please try again';
+    }
+  }
+
+  // ---- Login with Google ---------------------------------------------------
+
+  /// Signs in with Google. Only works for the existing admin: the Google
+  /// account must resolve to a Firebase user that has an `admins/{uid}`
+  /// document. Any other Google account is signed out and refused.
+  ///
+  /// Returns an error message, null when login worked, or the special value
+  /// 'cancelled' when the person closed the Google popup (show no error).
+  Future<String?> loginWithGoogle({bool remember = true}) async {
+    try {
+      if (!_googleReady) {
+        if (_webClientId.isEmpty) {
+          await GoogleSignIn.instance.initialize();
+        } else {
+          await GoogleSignIn.instance.initialize(serverClientId: _webClientId);
+        }
+        _googleReady = true;
+      }
+      try {
+        await GoogleSignIn.instance.signOut();
+      } catch (_) {}
+
+      final account = await GoogleSignIn.instance.authenticate();
+      final idToken = account.authentication.idToken;
+      if (idToken == null) return 'Google sign-in failed: no ID token received';
+
+      final cred = await _auth.signInWithCredential(GoogleAuthProvider.credential(idToken: idToken));
+      final user = cred.user;
+      if (user == null) return 'Google sign-in failed. Try again.';
+
+      final acct = await _loadAdmin(user);
+      if (acct == null) {
+        await _auth.signOut();
+        try {
+          await GoogleSignIn.instance.signOut();
+        } catch (_) {}
+        return 'This Google account is not an admin account';
+      }
+
+      current = acct;
+      await setRememberedEmail(remember ? acct.email : null);
+      return null;
+    } on GoogleSignInException catch (e) {
+      if (e.code == GoogleSignInExceptionCode.canceled) return 'cancelled';
+      // TEMP DEBUG: shows the real reason in the red box. Remove when it works.
+      return 'Google error: ${e.code.name} ${e.description ?? ''}';
+    } on FirebaseAuthException catch (e) {
+      return _authMessage(e);
+    } on FirebaseException catch (e) {
+      await _auth.signOut();
+      return e.message ?? 'Something went wrong. Please try again';
+    } catch (e) {
+      // TEMP DEBUG: remove when it works.
+      return 'Error: $e';
     }
   }
 

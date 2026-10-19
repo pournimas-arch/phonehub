@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'admin_theme.dart';
 import 'admin_data.dart';
 
@@ -9,6 +10,21 @@ const double _fBody = 10.5;
 const double _fSmall = 9.5;
 
 const int _lowStockLimit = 3; // this many or fewer = "Low stock"
+
+// Same limit as the "Stock (units)" field of the phone form (4 digits).
+const int _maxStock = 9999;
+
+/// Validates the typed stock. Returns an error message, or null when it is fine.
+String? _validateStockText(String raw, int current) {
+  final s = raw.trim();
+  if (s.isEmpty) return 'Enter the number of units';
+  if (!RegExp(r'^\d+$').hasMatch(s)) return 'Use digits only (no minus or decimal)';
+  final n = int.tryParse(s);
+  if (n == null) return 'Enter a valid number';
+  if (n > _maxStock) return 'Stock cannot be more than $_maxStock';
+  if (n == current) return 'This is already the current stock';
+  return null;
+}
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -176,7 +192,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
           IconButton(
             visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.add_circle_outline_rounded, size: 22),
-            onPressed: () => store.setStock(p, p.stock + 1),
+            onPressed: p.stock < _maxStock ? () => store.setStock(p, p.stock + 1) : null,
           ),
         ],
       ),
@@ -226,12 +242,12 @@ class _StockDialogState extends State<_StockDialog> {
   }
 
   void _save() {
-    final n = int.tryParse(_c.text.trim());
-    if (n == null || n < 0) {
-      setState(() => _error = 'Enter a valid number');
+    final err = _validateStockText(_c.text, widget.stock);
+    if (err != null) {
+      setState(() => _error = err);
       return;
     }
-    Navigator.pop(context, n);
+    Navigator.pop(context, int.parse(_c.text.trim()));
   }
 
   @override
@@ -249,6 +265,10 @@ class _StockDialogState extends State<_StockDialog> {
             controller: _c,
             autofocus: true,
             keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(4)],
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
             style: const TextStyle(fontSize: _fBody + 1, fontWeight: FontWeight.w600),
             decoration: InputDecoration(
               labelText: 'Units in stock',

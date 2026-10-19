@@ -305,9 +305,28 @@ class OrderDetailScreen extends StatelessWidget {
         ),
       ),
     );
-    if (r == null) return;
+    if (r == null || !context.mounted) return;
+    // the order is live data: it may already be cancelled or delivered while the sheet was open
+    if (o.cancelled || !o.isOngoing) {
+      snack(context, 'This order can no longer be cancelled');
+      return;
+    }
+    final sure = await confirmDialog(
+      context,
+      'Cancel order #${o.id}?',
+      o.isCod
+          ? 'Reason: $r. Stock will be added back and the customer will be notified. This cannot be undone.'
+          : 'Reason: $r. Stock will be added back and a refund of ${inr(o.total)} will be created. This cannot be undone.',
+      yes: 'Cancel order',
+      danger: true,
+    );
+    if (!sure || !context.mounted) return;
+    if (o.cancelled || !o.isOngoing) {
+      snack(context, 'This order can no longer be cancelled');
+      return;
+    }
     store.cancelOrder(o, r);
-    if (context.mounted) snack(context, 'Order #${o.id} cancelled');
+    snack(context, 'Order #${o.id} cancelled');
   }
 
   void _copy(BuildContext context, String text, String msg) {

@@ -10,6 +10,86 @@ const double _fBody = 10.5;
 const double _fSmall = 9.5;
 
 // -----------------------------------------------------------------------------
+// Validation helpers (logic only, no UI)
+// -----------------------------------------------------------------------------
+
+final RegExp _vEmail = RegExp(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$');
+final RegExp _vNameChars = RegExp(r"^\p{L}[\p{L}\p{M} .'\-]*$", unicode: true);
+
+String _vClean(String v) => v.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+String? _vName(String? v, {String label = 'name'}) {
+  final s = _vClean(v ?? '');
+  if (s.isEmpty) return 'Enter your $label';
+  if (s.length < 2) return 'The $label is too short';
+  if (s.length > 50) return 'The $label can be at most 50 characters';
+  if (!_vNameChars.hasMatch(s)) return 'Use letters only (spaces, . \' - allowed)';
+  if (RegExp(r'(.)\1{3,}').hasMatch(s)) return 'Enter a real $label';
+  return null;
+}
+
+String? _vEmailCheck(String? v, {bool required = true}) {
+  final s = (v ?? '').trim();
+  if (s.isEmpty) return required ? 'Enter an email address' : null;
+  if (s.length > 254) return 'Email is too long';
+  if (RegExp(r'\s').hasMatch(s)) return 'Email cannot contain spaces';
+  if (s.contains('..') || s.startsWith('.') || s.split('@').first.endsWith('.')) return 'Enter a valid email address';
+  if (s.split('@').first.length > 64) return 'The part before @ is too long';
+  if (!_vEmail.hasMatch(s)) return 'Enter a valid email address';
+  return null;
+}
+
+/// Keeps only the digits and removes +91 / 91 / leading 0, so "+91 98765-43210" becomes "9876543210".
+String _vMobileDigits(String v) {
+  var d = v.replaceAll(RegExp(r'\D'), '');
+  if (d.length == 12 && d.startsWith('91')) d = d.substring(2);
+  if (d.length == 11 && d.startsWith('0')) d = d.substring(1);
+  return d;
+}
+
+/// Indian mobile number (10 digits, starts with 6-9). Empty is allowed unless [required].
+String? _vMobile(String? v, {bool required = false, bool allowTollFree = false}) {
+  final raw = (v ?? '').trim();
+  if (raw.isEmpty) return required ? 'Enter a mobile number' : null;
+  if (RegExp(r'[^0-9+\-() ]').hasMatch(raw)) return 'Use digits only';
+  final d = _vMobileDigits(raw);
+  if (allowTollFree && RegExp(r'^1800\d{6,7}$').hasMatch(raw.replaceAll(RegExp(r'\D'), ''))) return null;
+  if (d.length != 10) return 'Enter a 10-digit mobile number';
+  if (!RegExp(r'^[6-9]').hasMatch(d)) return 'Mobile number must start with 6, 7, 8 or 9';
+  if (RegExp(r'^(\d)\1{9}$').hasMatch(d)) return 'Enter a real mobile number';
+  return null;
+}
+
+/// Strong-enough password for the admin account.
+String? _vStrongPassword(String pass, {String? oldPass, String? email}) {
+  if (pass.isEmpty) return 'Enter a new password';
+  if (pass.length < 8) return 'New password needs at least 8 characters';
+  if (pass.length > 64) return 'New password can be at most 64 characters';
+  if (RegExp(r'\s').hasMatch(pass)) return 'Password cannot contain spaces';
+  if (!RegExp(r'[A-Za-z]').hasMatch(pass) || !RegExp(r'\d').hasMatch(pass)) {
+    return 'Use both letters and numbers';
+  }
+  if (RegExp(r'^(.)\1+$').hasMatch(pass)) return 'Password is too easy to guess';
+  const common = ['password1', 'password123', 'admin123', 'admin1234', 'qwerty123', 'abcd1234', '12345678a', 'welcome123', 'phonehub123'];
+  if (common.contains(pass.toLowerCase())) return 'Password is too common. Choose another';
+  if (oldPass != null && pass == oldPass) return 'New password must be different from the current one';
+  final local = (email ?? '').split('@').first.toLowerCase();
+  if (local.length >= 4 && pass.toLowerCase().contains(local)) return 'Password should not contain your email name';
+  return null;
+}
+
+/// Whole number inside [min, max] (digits only, no sign, no decimals).
+String? _vIntRange(String? v, {required String label, required int min, required int max}) {
+  final s = (v ?? '').trim();
+  if (s.isEmpty) return 'Enter $label';
+  if (!RegExp(r'^\d+$').hasMatch(s)) return 'Use digits only';
+  final n = int.tryParse(s);
+  if (n == null) return 'Enter a valid number';
+  if (n < min || n > max) return 'Must be between $min and $max';
+  return null;
+}
+
+// -----------------------------------------------------------------------------
 // Small shared helpers
 // -----------------------------------------------------------------------------
 
@@ -45,12 +125,13 @@ InputDecoration _dec(String label, {String? prefix, String? hint, String? helper
   focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: AC.primary, width: 1.3)),
 );
 
-Widget _field(String label, TextEditingController c, {TextInputType? type, String? prefix, String? helper, String? Function(String?)? validator, int maxLines = 1, bool obscure = false}) => TextFormField(
+Widget _field(String label, TextEditingController c, {TextInputType? type, String? prefix, String? helper, String? Function(String?)? validator, int maxLines = 1, bool obscure = false, List<TextInputFormatter>? formatters}) => TextFormField(
   controller: c,
   keyboardType: type,
   obscureText: obscure,
   maxLines: maxLines,
   validator: validator,
+  inputFormatters: formatters,
   style: const TextStyle(fontSize: _fBody + 1, fontWeight: FontWeight.w600),
   decoration: _dec(label, prefix: prefix, helper: helper),
 );
@@ -472,10 +553,31 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
     super.dispose();
   }
 
+  bool _savingProfile = false;
+
   Future<void> _save() async {
+    if (_savingProfile) return;
+    FocusScope.of(context).unfocus();
     if (!_form.currentState!.validate()) return;
-    final msg = await store.updateAdminProfile(name: _name.text.trim(), email: _email.text.trim(), phone: _phone.text.trim());
+
+    final name = _vClean(_name.text);
+    final email = _email.text.trim().toLowerCase();
+    final phoneRaw = _phone.text.trim();
+    final phone = phoneRaw.isEmpty ? '' : _vMobileDigits(phoneRaw);
+
+    if (name == store.adminName.trim() && email == store.adminEmail.trim().toLowerCase() && phone == store.adminPhone.trim()) {
+      snack(context, 'No changes to save');
+      return;
+    }
+    setState(() => _savingProfile = true);
+    final msg = await store.updateAdminProfile(name: name, email: email, phone: phone);
     if (!mounted) return;
+    setState(() => _savingProfile = false);
+    if (msg == null) {
+      _name.text = name;
+      _email.text = email;
+      _phone.text = phone;
+    }
     snack(context, msg ?? 'Profile updated');
   }
 
@@ -527,11 +629,28 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
                 ),
               ),
               _label('Your details', icon: Icons.person_outline_rounded),
-              _field('Full name', _name, validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null),
+              _field('Full name', _name,
+                  validator: (v) => _vName(v, label: 'name'),
+                  formatters: [
+                    LengthLimitingTextInputFormatter(50),
+                    FilteringTextInputFormatter.allow(RegExp(r"[\p{L}\p{M} .'\-]", unicode: true)),
+                  ]),
               const SizedBox(height: 12),
-              _field('Email', _email, type: TextInputType.emailAddress, validator: (v) => (v == null || !v.contains('@')) ? 'Enter a valid email' : null),
+              _field('Email', _email,
+                  type: TextInputType.emailAddress,
+                  validator: _vEmailCheck,
+                  formatters: [
+                    LengthLimitingTextInputFormatter(254),
+                    FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                  ]),
               const SizedBox(height: 12),
-              _field('Phone', _phone, type: TextInputType.phone),
+              _field('Phone', _phone,
+                  type: TextInputType.phone,
+                  validator: (v) => _vMobile(v),
+                  formatters: [
+                    LengthLimitingTextInputFormatter(16),
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9+\-() ]')),
+                  ]),
               const SizedBox(height: 20),
               _bigButton('Save changes', _save, icon: Icons.check_rounded),
               const SizedBox(height: 10),
@@ -568,8 +687,18 @@ class _PasswordDialogState extends State<_PasswordDialog> {
   }
 
   Future<void> _submit() async {
-    if (_new.text.length < 6) {
-      setState(() => _err = 'New password needs 6+ characters');
+    if (_busy) return;
+    if (_old.text.isEmpty) {
+      setState(() => _err = 'Enter your current password');
+      return;
+    }
+    final weak = _vStrongPassword(_new.text, oldPass: _old.text, email: store.adminEmail);
+    if (weak != null) {
+      setState(() => _err = weak);
+      return;
+    }
+    if (_confirm.text.isEmpty) {
+      setState(() => _err = 'Confirm your new password');
       return;
     }
     if (_new.text != _confirm.text) {
@@ -601,11 +730,11 @@ class _PasswordDialogState extends State<_PasswordDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _field('Current password', _old, obscure: true),
+            _field('Current password', _old, obscure: true, formatters: [LengthLimitingTextInputFormatter(64)]),
             const SizedBox(height: 12),
-            _field('New password', _new, obscure: true),
+            _field('New password', _new, obscure: true, formatters: [LengthLimitingTextInputFormatter(64), FilteringTextInputFormatter.deny(RegExp(r'\s'))]),
             const SizedBox(height: 12),
-            _field('Confirm new password', _confirm, obscure: true),
+            _field('Confirm new password', _confirm, obscure: true, formatters: [LengthLimitingTextInputFormatter(64), FilteringTextInputFormatter.deny(RegExp(r'\s'))]),
             if (_err != null)
               Padding(
                 padding: const EdgeInsets.only(top: 10),
@@ -653,29 +782,93 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
-  String? _num(String? v) => (int.tryParse((v ?? '').trim()) == null) ? 'Enter a number' : null;
+  // Limits keep the values sensible AND whole numbers: the Firestore rules compute the
+  // refund window from returnDays, so a decimal / negative / huge value would break refunds.
+  String? _deliveryCheck(String? v) => _vIntRange(v, label: 'the delivery charge', min: 0, max: 1000);
+  String? _freeAboveCheck(String? v) => _vIntRange(v, label: 'the free delivery limit', min: 0, max: 1000000);
+  String? _returnDaysCheck(String? v) => _vIntRange(v, label: 'the return window', min: 0, max: 30);
+  String? _refundDaysCheck(String? v) => _vIntRange(v, label: 'the refund time', min: 0, max: 30);
+  String? _earnCheck(String? v) => _vIntRange(v, label: 'the partner earning', min: 0, max: 1000);
 
-  // Pincodes are 6 digits, separated by commas or spaces; empty = every pincode is accepted.
+  // Pincodes are 6 digits (not starting with 0), separated by commas or spaces, no repeats;
+  // empty = every pincode is accepted.
+  List<String> _pinList() => (_pincodes.text).split(RegExp(r'[,\s]+')).map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+
   String? _pins(String? v) {
-    final parts = (v ?? '').split(RegExp(r'[,\s]+')).where((e) => e.trim().isNotEmpty);
+    final parts = (v ?? '').split(RegExp(r'[,\s]+')).map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    final seen = <String>{};
     for (final p in parts) {
-      if (!RegExp(r'^\d{6}$').hasMatch(p.trim())) return 'Use 6-digit pincodes separated by commas';
+      if (!RegExp(r'^[1-9]\d{5}$').hasMatch(p)) return '"$p" is not a valid 6-digit pincode';
+      if (!seen.add(p)) return 'Pincode $p is entered twice';
     }
+    if (parts.length > 500) return 'Add at most 500 pincodes';
+    return null;
+  }
+
+  String? _supportPhoneCheck(String? v) => _vMobile(v, allowTollFree: true);
+  String? _supportEmailCheck(String? v) => _vEmailCheck(v, required: false);
+
+  String? _hoursCheck(String? v) {
+    final s = _vClean(v ?? '');
+    if (s.isEmpty) return null;
+    if (s.length < 5) return 'Write the hours, for example: Mon-Sat, 10 AM to 7 PM';
+    if (s.length > 60) return 'Support hours can be at most 60 characters';
+    if (!RegExp(r'\d').hasMatch(s)) return 'Include the time, for example: 10 AM to 7 PM';
     return null;
   }
 
   void _save() {
+    FocusScope.of(context).unfocus();
     if (!_form.currentState!.validate()) return;
-    store.deliveryCharge = int.parse(_delivery.text.trim());
-    store.freeDeliveryAbove = int.parse(_freeAbove.text.trim());
-    store.returnDays = int.parse(_returnDays.text.trim());
-    store.refundDays = int.parse(_refundDays.text.trim());
-    store.serviceablePincodes = _pincodes.text.trim();
-    store.supportHours = _sHours.text.trim();
-    store.partnerEarning = int.parse(_partnerEarn.text.trim());
-    store.supportPhone = _sPhone.text.trim();
-    store.supportEmail = _sEmail.text.trim();
+    final charge = int.parse(_delivery.text.trim());
+    final freeAbove = int.parse(_freeAbove.text.trim());
+
+    // The customer app gives free delivery when the cart total is >= "Free above".
+    // So "Free above = 0" would make EVERY order free even when a charge is set.
+    if (charge > 0 && freeAbove == 0) {
+      snack(context, 'Free above is 0, so delivery would be free on every order. Enter a higher limit, or set the delivery charge to 0.');
+      return;
+    }
+    if (charge > 0 && freeAbove > 0 && freeAbove <= charge) {
+      snack(context, 'Free delivery limit must be higher than the delivery charge');
+      return;
+    }
+
+    final pins = _pinList();
+    final pinText = pins.join(', ');
+    final hours = _vClean(_sHours.text);
+    final phone = _sPhone.text.trim();
+    final email = _sEmail.text.trim().toLowerCase();
+    final returnDays = int.parse(_returnDays.text.trim());
+    final refundDays = int.parse(_refundDays.text.trim());
+    final earn = int.parse(_partnerEarn.text.trim());
+
+    if (charge == store.deliveryCharge &&
+        freeAbove == store.freeDeliveryAbove &&
+        returnDays == store.returnDays &&
+        refundDays == store.refundDays &&
+        pinText == store.serviceablePincodes.trim() &&
+        hours == store.supportHours.trim() &&
+        earn == store.partnerEarning &&
+        phone == store.supportPhone.trim() &&
+        email == store.supportEmail.trim()) {
+      snack(context, 'No changes to save');
+      return;
+    }
+
+    store.deliveryCharge = charge;
+    store.freeDeliveryAbove = freeAbove;
+    store.returnDays = returnDays;
+    store.refundDays = refundDays;
+    store.serviceablePincodes = pinText;
+    store.supportHours = hours;
+    store.partnerEarning = earn;
+    store.supportPhone = phone;
+    store.supportEmail = email;
     store.changed();
+    _pincodes.text = pinText;
+    _sHours.text = hours;
+    _sEmail.text = email;
     snack(context, 'Settings saved');
   }
 
@@ -694,19 +887,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(child: _field('Delivery charge', _delivery, type: TextInputType.number, prefix: '₹ ', validator: _num)),
+                  Expanded(child: _field('Delivery charge', _delivery, type: TextInputType.number, prefix: '₹ ', validator: _deliveryCheck, formatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(4)])),
                   const SizedBox(width: 10),
-                  Expanded(child: _field('Free above', _freeAbove, type: TextInputType.number, prefix: '₹ ', validator: _num, helper: 'Free delivery limit')),
+                  Expanded(child: _field('Free above', _freeAbove, type: TextInputType.number, prefix: '₹ ', validator: _freeAboveCheck, helper: 'Free delivery limit', formatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(7)])),
                 ],
               ),
               const SizedBox(height: 12),
-              _field('Return window (days)', _returnDays, type: TextInputType.number, validator: _num),
+              _field('Return window (days)', _returnDays, type: TextInputType.number, validator: _returnDaysCheck, formatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(2)]),
               const SizedBox(height: 12),
-              _field('Refund time (working days)', _refundDays, type: TextInputType.number, validator: _num, helper: 'Shown to customers. Keep 0 to show no number'),
+              _field('Refund time (working days)', _refundDays, type: TextInputType.number, validator: _refundDaysCheck, helper: 'Shown to customers. Keep 0 to show no number', formatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(2)]),
               const SizedBox(height: 12),
-              _field('Serviceable pincodes', _pincodes, type: TextInputType.text, validator: _pins, maxLines: 2, helper: 'Comma separated. Leave empty to deliver everywhere'),
+              _field('Serviceable pincodes', _pincodes, type: TextInputType.text, validator: _pins, maxLines: 2, helper: 'Comma separated. Leave empty to deliver everywhere', formatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9, \n]')), LengthLimitingTextInputFormatter(3600)]),
               const SizedBox(height: 12),
-              _field('Delivery partner earning per order', _partnerEarn, type: TextInputType.number, prefix: '₹ ', validator: _num),
+              _field('Delivery partner earning per order', _partnerEarn, type: TextInputType.number, prefix: '₹ ', validator: _earnCheck, formatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(4)]),
               const SizedBox(height: 12),
               ListenableBuilder(
                 listenable: store,
@@ -717,11 +910,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
 
               _label('Support contact (shown in customer app)', icon: Icons.headset_mic_outlined),
-              _field('Support phone', _sPhone, type: TextInputType.phone),
+              _field('Support phone', _sPhone, type: TextInputType.phone, validator: _supportPhoneCheck, formatters: [LengthLimitingTextInputFormatter(16), FilteringTextInputFormatter.allow(RegExp(r'[0-9+\-() ]'))]),
               const SizedBox(height: 12),
-              _field('Support email', _sEmail, type: TextInputType.emailAddress),
+              _field('Support email', _sEmail, type: TextInputType.emailAddress, validator: _supportEmailCheck, formatters: [LengthLimitingTextInputFormatter(254), FilteringTextInputFormatter.deny(RegExp(r'\s'))]),
               const SizedBox(height: 12),
-              _field('Support hours', _sHours, helper: 'For example: Mon-Sat, 10 AM to 7 PM'),
+              _field('Support hours', _sHours, helper: 'For example: Mon-Sat, 10 AM to 7 PM', validator: _hoursCheck, formatters: [LengthLimitingTextInputFormatter(60)]),
               const SizedBox(height: 18),
               _bigButton('Save settings', _save, icon: Icons.check_rounded),
 

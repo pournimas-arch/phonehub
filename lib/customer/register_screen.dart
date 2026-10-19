@@ -16,6 +16,123 @@ const Color _blue = Color(0xFF2452B8);
 const Color _cyan = Color(0xFF38D9FF);
 const Color _errorRed = Color(0xFFE5484D);
 
+// ---------------------------------------------------------------------------
+// Registration validation
+// ---------------------------------------------------------------------------
+const int _maxName = 50;
+const int _maxEmail = 100;
+const int _minPassword = 8;
+const int _maxPassword = 64;
+
+final RegExp _nameChars = RegExp(r"^\p{L}[\p{L}\p{M} .'-]*$", unicode: true);
+final RegExp _emailFormat =
+RegExp(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$');
+
+/// Common typing mistakes in the email domain -> what the person most likely meant.
+const Map<String, String> _emailTypos = {
+  'gmial.com': 'gmail.com',
+  'gmai.com': 'gmail.com',
+  'gmal.com': 'gmail.com',
+  'gamil.com': 'gmail.com',
+  'gmail.con': 'gmail.com',
+  'gmail.co': 'gmail.com',
+  'gmail.in': 'gmail.com',
+  'yahooo.com': 'yahoo.com',
+  'yaho.com': 'yahoo.com',
+  'yahoo.con': 'yahoo.com',
+  'hotmial.com': 'hotmail.com',
+  'hotmail.con': 'hotmail.com',
+  'outlok.com': 'outlook.com',
+  'outlook.con': 'outlook.com',
+};
+
+/// Passwords that are far too easy to guess.
+const Set<String> _commonPasswords = {
+  'password', 'password1', 'password123', 'password@123', 'passw0rd',
+  '12345678', '123456789', '1234567890', '11111111', '00000000',
+  'qwerty123', 'qwertyuiop', 'abc12345', 'abcd1234', 'iloveyou',
+  'admin123', 'welcome1', 'welcome123', 'letmein1', 'phonehub123', 'phonehub1',
+};
+
+/// Trims and collapses repeated spaces ("Ravi   Kumar " -> "Ravi Kumar").
+String _cleanName(String v) => v.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+/// Keeps the digits only and removes a +91 / 91 / 0 prefix -> the 10-digit mobile number.
+String _phoneDigits(String v) {
+  var d = v.replaceAll(RegExp(r'\D'), '');
+  if (d.length == 12 && d.startsWith('91')) {
+    d = d.substring(2);
+  } else if (d.length == 11 && d.startsWith('0')) {
+    d = d.substring(1);
+  }
+  return d;
+}
+
+String? _validateRegisterName(String? v) {
+  final s = _cleanName(v ?? '');
+  if (s.isEmpty) return 'Please enter your full name';
+  if (s.length < 2) return 'Name must contain at least 2 characters';
+  if (s.length > _maxName) return 'Name must be $_maxName characters or fewer';
+  if (!_nameChars.hasMatch(s)) return 'Use letters only (no numbers or symbols)';
+  return null;
+}
+
+String? _validateRegisterEmail(String? v) {
+  final s = (v ?? '').trim();
+  if (s.isEmpty) return 'Please enter your email';
+  if (s.length > _maxEmail) return 'Email must be $_maxEmail characters or fewer';
+  if (s.contains('..') || !_emailFormat.hasMatch(s)) {
+    return 'Enter a valid email address';
+  }
+  final domain = s.split('@').last.toLowerCase();
+  final fix = _emailTypos[domain];
+  if (fix != null) return 'Did you mean $fix?';
+  return null;
+}
+
+String? _validateRegisterPhone(String? v) {
+  final raw = (v ?? '').trim();
+  if (raw.isEmpty) return 'Please enter your phone number';
+  if (RegExp(r'[^0-9+\-() ]').hasMatch(raw)) {
+    return 'Phone number can only contain digits';
+  }
+  final d = _phoneDigits(raw);
+  if (d.length != 10) return 'Enter a 10-digit mobile number';
+  if (!RegExp(r'^[6-9]').hasMatch(d)) {
+    return 'Mobile number must start with 6, 7, 8 or 9';
+  }
+  if (RegExp(r'^(\d)\1{9}$').hasMatch(d)) return 'Enter a real mobile number';
+  return null;
+}
+
+String? _validateRegisterPassword(String? v, {required String name, required String email}) {
+  final p = v ?? '';
+  if (p.isEmpty) return 'Please create a password';
+  if (p.length < _minPassword) {
+    return 'Password must be at least $_minPassword characters';
+  }
+  if (p.length > _maxPassword) {
+    return 'Password must be $_maxPassword characters or fewer';
+  }
+  if (RegExp(r'\s').hasMatch(p)) return 'Password cannot contain spaces';
+  if (!RegExp(r'[A-Za-z]').hasMatch(p) || !RegExp(r'\d').hasMatch(p)) {
+    return 'Use at least one letter and one number';
+  }
+  final lower = p.toLowerCase();
+  if (_commonPasswords.contains(lower) || RegExp(r'^(.)\1+$').hasMatch(p)) {
+    return 'This password is too common. Choose a stronger one';
+  }
+  final local = email.trim().toLowerCase().split('@').first;
+  if (local.length >= 4 && lower.contains(local)) {
+    return 'Password should not contain your email name';
+  }
+  final first = _cleanName(name).toLowerCase().split(' ').first;
+  if (first.length >= 4 && lower.contains(first)) {
+    return 'Password should not contain your name';
+  }
+  return null;
+}
+
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
 
@@ -26,6 +143,7 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen>
     with TickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
+  final _confirmFieldKey = GlobalKey<FormFieldState<String>>();
 
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
@@ -156,9 +274,9 @@ class _RegisterScreenState extends State<RegisterScreen>
       return;
     }
 
-    final name = _nameController.text.trim();
+    final name = _cleanName(_nameController.text);
     final email = _emailController.text.trim().toLowerCase();
-    final phone = _phoneController.text.trim();
+    final phone = _phoneDigits(_phoneController.text);
     final password = _passwordController.text;
 
     setState(() => _isSubmitting = true);
@@ -248,9 +366,16 @@ class _RegisterScreenState extends State<RegisterScreen>
           );
           break;
 
+        case 'operation-not-allowed':
+          _showMessage(
+            'Email sign-up is not available right now. Please contact PhoneHub support.',
+            isError: true,
+          );
+          break;
+
         default:
           _showMessage(
-            e.message ?? 'Could not create your account. Please try again.',
+            'Could not create your account. Please try again.',
             isError: true,
           );
       }
@@ -657,19 +782,13 @@ class _RegisterScreenState extends State<RegisterScreen>
                     textInputAction: TextInputAction.next,
                     autofillHints: const [AutofillHints.name],
                     onSubmitted: (_) => _emailFocus.requestFocus(),
-                    validator: (value) {
-                      final name = (value ?? '').trim();
-
-                      if (name.isEmpty) {
-                        return 'Please enter your full name';
-                      }
-
-                      if (name.length < 2) {
-                        return 'Name must contain at least 2 characters';
-                      }
-
-                      return null;
-                    },
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(_maxName),
+                      FilteringTextInputFormatter.allow(
+                        RegExp(r"[\p{L}\p{M} .'\-]", unicode: true),
+                      ),
+                    ],
+                    validator: _validateRegisterName,
                   ),
 
                   SizedBox(height: 15 * scale),
@@ -685,21 +804,11 @@ class _RegisterScreenState extends State<RegisterScreen>
                     textInputAction: TextInputAction.next,
                     autofillHints: const [AutofillHints.email],
                     onSubmitted: (_) => _phoneFocus.requestFocus(),
-                    validator: (value) {
-                      final email = value?.trim() ?? '';
-
-                      if (email.isEmpty) {
-                        return 'Please enter your email';
-                      }
-
-                      if (!RegExp(
-                        r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
-                      ).hasMatch(email)) {
-                        return 'Enter a valid email address';
-                      }
-
-                      return null;
-                    },
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(_maxEmail),
+                      FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                    ],
+                    validator: _validateRegisterEmail,
                   ),
 
                   SizedBox(height: 15 * scale),
@@ -714,27 +823,13 @@ class _RegisterScreenState extends State<RegisterScreen>
                     textInputAction: TextInputAction.next,
                     autofillHints: const [AutofillHints.telephoneNumber],
                     inputFormatters: [
+                      LengthLimitingTextInputFormatter(16),
                       FilteringTextInputFormatter.allow(
                         RegExp(r'[0-9+\-() ]'),
                       ),
                     ],
                     onSubmitted: (_) => _passwordFocus.requestFocus(),
-                    validator: (value) {
-                      final phone = (value ?? '').replaceAll(
-                        RegExp(r'[\s()+-]'),
-                        '',
-                      );
-
-                      if (phone.isEmpty) {
-                        return 'Please enter your phone number';
-                      }
-
-                      if (!RegExp(r'^\d{10,13}$').hasMatch(phone)) {
-                        return 'Enter a valid phone number';
-                      }
-
-                      return null;
-                    },
+                    validator: _validateRegisterPhone,
                   ),
 
                   SizedBox(height: 15 * scale),
@@ -749,17 +844,25 @@ class _RegisterScreenState extends State<RegisterScreen>
                     textInputAction: TextInputAction.next,
                     autofillHints: const [AutofillHints.newPassword],
                     onSubmitted: (_) => _confirmPasswordFocus.requestFocus(),
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(_maxPassword),
+                      FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                    ],
+                    // Re-check "Confirm password" when the password changes.
+                    onChanged: (_) {
+                      if (_confirmPasswordController.text.isNotEmpty) {
+                        _confirmFieldKey.currentState?.validate();
+                      }
+                    },
                     suffix: _eye(
                       _obscurePassword,
                       _togglePasswordVisibility,
                     ),
-                    validator: (value) {
-                      if ((value ?? '').length < 6) {
-                        return 'Password must be at least 6 characters';
-                      }
-
-                      return null;
-                    },
+                    validator: (value) => _validateRegisterPassword(
+                      value,
+                      name: _nameController.text,
+                      email: _emailController.text,
+                    ),
                   ),
 
                   SizedBox(height: 15 * scale),
@@ -774,6 +877,11 @@ class _RegisterScreenState extends State<RegisterScreen>
                     textInputAction: TextInputAction.done,
                     autofillHints: const [AutofillHints.newPassword],
                     onSubmitted: (_) => _submitRegistration(),
+                    fieldKey: _confirmFieldKey,
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(_maxPassword),
+                      FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                    ],
                     suffix: _eye(
                       _obscureConfirmPassword,
                       _toggleConfirmPasswordVisibility,
@@ -1098,6 +1206,8 @@ class _RegisterInput extends StatelessWidget {
   final Widget? suffix;
   final String? Function(String?)? validator;
   final ValueChanged<String>? onSubmitted;
+  final ValueChanged<String>? onChanged;
+  final GlobalKey<FormFieldState<String>>? fieldKey;
   final Iterable<String>? autofillHints;
   final List<TextInputFormatter>? inputFormatters;
 
@@ -1113,6 +1223,8 @@ class _RegisterInput extends StatelessWidget {
     this.suffix,
     this.validator,
     this.onSubmitted,
+    this.onChanged,
+    this.fieldKey,
     this.autofillHints,
     this.inputFormatters,
   });
@@ -1120,8 +1232,10 @@ class _RegisterInput extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return TextFormField(
+      key: fieldKey,
       controller: controller,
       focusNode: focusNode,
+      onChanged: onChanged,
       keyboardType: keyboardType,
       textInputAction: textInputAction,
       textCapitalization: textCapitalization,

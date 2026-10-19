@@ -106,6 +106,41 @@ Widget phoneActiveChip(String label, VoidCallback onRemove) => Chip(
   visualDensity: VisualDensity.compact,
 );
 
+// ---------------------------------------------------------------------------
+// Limits used by the Add / Edit phone form (one place, so they are easy to change)
+// ---------------------------------------------------------------------------
+
+/// Highest selling price / MRP the admin can type (stops typing mistakes like 9999999999).
+const int kMaxPhonePrice = 500000;
+
+/// Highest stock for one phone or one variant.
+const int kMaxStock = 9999;
+
+const int kMinPhoneNameLength = 3;
+const int kMaxPhoneNameLength = 60;
+
+/// Longest text for one specification row (display, processor, RAM ...).
+const int kMaxSpecLength = 60;
+
+/// Longest custom quality-check / in-the-box item.
+const int kMaxItemLength = 40;
+
+const int kMaxVariants = 8;
+const int kMaxQualityChecks = 20;
+const int kMaxBoxItems = 15;
+
+/// Photos are saved inside the product document and Firestore allows only 1 MiB per
+/// document, so all photos together must stay well below that (the rest of the
+/// document needs space too).
+const int kMaxPhotoTotalBytes = 800 * 1024;
+
+// ---------------------------------------------------------------------------
+// Validators
+// ---------------------------------------------------------------------------
+
+/// Trims the text and turns several spaces / new lines into one space.
+String cleanText(String s) => s.trim().replaceAll(RegExp(r'\s+'), ' ');
+
 /// Number validator used by the forms.
 String? validateNumber(String? v, {int min = 0, int? max}) {
   final n = int.tryParse((v ?? '').trim());
@@ -113,6 +148,114 @@ String? validateNumber(String? v, {int min = 0, int? max}) {
   if (n < min) return 'Minimum $min';
   if (max != null && n > max) return 'Maximum $max';
   return null;
+}
+
+/// Phone name: required, 3 to 60 characters, must contain letters.
+String? validatePhoneName(String? v) {
+  final t = cleanText(v ?? '');
+  if (t.isEmpty) return 'Enter the phone name';
+  if (t.length < kMinPhoneNameLength) return 'Name is too short (minimum $kMinPhoneNameLength characters)';
+  if (t.length > kMaxPhoneNameLength) return 'Name is too long (maximum $kMaxPhoneNameLength characters)';
+  if (!RegExp(r'\p{L}', unicode: true).hasMatch(t)) return 'Name must contain letters, not only numbers or symbols';
+  return null;
+}
+
+/// Selling price / MRP: whole rupees from 1 up to [kMaxPhonePrice].
+String? validatePrice(String? v, {String label = 'price'}) {
+  final text = (v ?? '').trim();
+  if (text.isEmpty) return 'Enter the $label';
+  final n = int.tryParse(text);
+  if (n == null) return 'Use digits only (no decimals)';
+  if (n < 1) return 'Minimum ${inr(1)}';
+  if (n > kMaxPhonePrice) return 'Maximum ${inr(kMaxPhonePrice)}';
+  return null;
+}
+
+/// MRP: same rules as the price, and it can not be lower than the selling price.
+String? validateMrp(String? v, String priceText) {
+  final base = validatePrice(v, label: 'MRP');
+  if (base != null) return base;
+  final mrp = int.parse(v!.trim());
+  final price = int.tryParse(priceText.trim());
+  if (price != null && mrp < price) return 'MRP cannot be lower than the selling price';
+  return null;
+}
+
+/// Stock: whole number from 0 up to [kMaxStock].
+String? validateStock(String? v) {
+  final text = (v ?? '').trim();
+  if (text.isEmpty) return 'Enter the stock';
+  final n = int.tryParse(text);
+  if (n == null) return 'Use digits only';
+  if (n < 0) return 'Minimum 0';
+  if (n > kMaxStock) return 'Maximum $kMaxStock';
+  return null;
+}
+
+/// Optional specification text (blank is fine, the row is hidden for customers).
+/// [needDigit] is for values that must contain a number (RAM, camera, battery capacity ...).
+String? validateSpec(String? v, {bool needDigit = false}) {
+  final t = cleanText(v ?? '');
+  if (t.isEmpty) return null;
+  if (t.length > kMaxSpecLength) return 'Too long (maximum $kMaxSpecLength characters)';
+  if (needDigit && !RegExp(r'\d').hasMatch(t)) return 'Include a number, for example 8 GB';
+  return null;
+}
+
+/// Checks a custom quality-check / box item. [existing] is what is already selected.
+String? validateItemText(String? v, {List<String> existing = const []}) {
+  final t = cleanText(v ?? '');
+  if (t.isEmpty) return 'Enter a name';
+  if (t.length < 2) return 'Too short';
+  if (t.length > kMaxItemLength) return 'Too long (maximum $kMaxItemLength characters)';
+  if (!RegExp(r'[\p{L}\d]', unicode: true).hasMatch(t)) return 'Use letters or numbers';
+  if (existing.any((e) => e.toLowerCase() == t.toLowerCase())) return '$t is already added';
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Photo size helpers (photos live inside the Firestore product document)
+// ---------------------------------------------------------------------------
+
+/// Stored size of one image string. Local photos are base64 data URIs and count in full;
+/// a normal web link is tiny, so it counts as 0.
+int storedImageBytes(String source) => source.startsWith('data:') ? source.length : 0;
+
+int storedImagesBytes(Iterable<String> sources) => sources.fold<int>(0, (sum, s) => sum + storedImageBytes(s));
+
+String formatKb(int bytes) => '${(bytes / 1024).round()} KB';
+
+/// Returns an error text when all photos together are too big to be saved, else null.
+String? validatePhotoTotal(int totalBytes) {
+  if (totalBytes <= kMaxPhotoTotalBytes) return null;
+  return 'Photos are too large (${formatKb(totalBytes)}). The limit is ${formatKb(kMaxPhotoTotalBytes)} in total. Remove a photo or choose smaller ones.';
+}
+
+/// Same look as [formField] (label, ₹ prefix, spacing) with a keyboard filter and a length limit.
+Widget phoneFormField(
+    String label,
+    TextEditingController c, {
+      TextInputType? type,
+      String? prefix,
+      int? maxLength,
+      bool digitsOnly = false,
+      TextCapitalization capitalization = TextCapitalization.none,
+      String? Function(String?)? validator,
+    }) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: TextFormField(
+      controller: c,
+      keyboardType: type,
+      textCapitalization: capitalization,
+      inputFormatters: [
+        if (digitsOnly) FilteringTextInputFormatter.digitsOnly,
+        if (maxLength != null) LengthLimitingTextInputFormatter(maxLength),
+      ],
+      validator: validator ?? (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+      decoration: InputDecoration(labelText: label, prefixText: prefix),
+    ),
+  );
 }
 
 /// Single-select pill chips (used inside the variant sheet).
@@ -133,35 +276,53 @@ Widget phoneChoiceChips(List<String> items, String value, ValueChanged<String> o
   ],
 );
 
-/// Dialog to type an exact stock number. Returns null if cancelled.
+/// Dialog to type an exact stock number (0 to [kMaxStock]). Returns null if cancelled.
 Future<int?> askStockDialog(BuildContext context, String name, int current) async {
   final c = TextEditingController(text: '$current');
+  String? error;
   final result = await showDialog<int>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text('Set stock', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: AC.muted, fontSize: AppText.small)),
-          const SizedBox(height: 10),
-          TextField(
-            controller: c,
-            autofocus: true,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: const InputDecoration(labelText: 'Units in stock'),
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) {
+        void submit() {
+          final err = validateStock(c.text);
+          if (err != null) {
+            setLocal(() => error = err);
+            return;
+          }
+          Navigator.pop(ctx, int.parse(c.text.trim()));
+        }
+
+        return AlertDialog(
+          title: Text('Set stock', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: AC.muted, fontSize: AppText.small)),
+              const SizedBox(height: 10),
+              TextField(
+                controller: c,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(4)],
+                onChanged: (_) {
+                  if (error != null) setLocal(() => error = null);
+                },
+                onSubmitted: (_) => submit(),
+                decoration: InputDecoration(labelText: 'Units in stock', errorText: error),
+              ),
+            ],
           ),
-        ],
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, int.tryParse(c.text.trim()) ?? current),
-          child: const Text('Save', style: TextStyle(fontWeight: FontWeight.w800)),
-        ),
-      ],
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            TextButton(
+              onPressed: submit,
+              child: const Text('Save', style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ],
+        );
+      },
     ),
   );
   c.dispose();
@@ -169,23 +330,43 @@ Future<int?> askStockDialog(BuildContext context, String name, int current) asyn
 }
 
 /// Dialog to type a short text (custom quality check / box item). Returns null if cancelled.
-Future<String?> askTextDialog(BuildContext context, String title, String label) async {
+/// Pass [existing] to stop the same item being added twice. The dialog stays open and shows
+/// the problem under the field until the text is valid.
+Future<String?> askTextDialog(BuildContext context, String title, String label, {List<String> existing = const []}) async {
   final c = TextEditingController();
+  String? error;
   final result = await showDialog<String>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-      content: TextField(
-        controller: c,
-        autofocus: true,
-        textCapitalization: TextCapitalization.sentences,
-        decoration: InputDecoration(labelText: label),
-        onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        TextButton(onPressed: () => Navigator.pop(ctx, c.text.trim()), child: const Text('Add', style: TextStyle(fontWeight: FontWeight.w800))),
-      ],
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) {
+        void submit() {
+          final err = validateItemText(c.text, existing: existing);
+          if (err != null) {
+            setLocal(() => error = err);
+            return;
+          }
+          Navigator.pop(ctx, cleanText(c.text));
+        }
+
+        return AlertDialog(
+          title: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          content: TextField(
+            controller: c,
+            autofocus: true,
+            textCapitalization: TextCapitalization.sentences,
+            inputFormatters: [LengthLimitingTextInputFormatter(kMaxItemLength)],
+            onChanged: (_) {
+              if (error != null) setLocal(() => error = null);
+            },
+            decoration: InputDecoration(labelText: label, errorText: error),
+            onSubmitted: (_) => submit(),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            TextButton(onPressed: submit, child: const Text('Add', style: TextStyle(fontWeight: FontWeight.w800))),
+          ],
+        );
+      },
     ),
   );
   c.dispose();

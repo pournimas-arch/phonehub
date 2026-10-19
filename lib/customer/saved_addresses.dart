@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -6,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'theme.dart';
 import 'checkout_ui.dart';
+import 'data.dart' show isPincodeServiceable;
 import 'confirm_details_screen.dart';
 import 'package:phonehub/app_text.dart';
 
@@ -17,6 +19,48 @@ class SavedAddress {
         required this.label,
         required this.line,
         required this.pincode});
+}
+
+// ---------------------------------------------------------------------------
+// Address validation (used by the Add / Edit address sheet and the list screen)
+// ---------------------------------------------------------------------------
+const int kMaxSavedAddresses = 10;
+const int _kMinAddressLine = 8;
+const int _kMaxAddressLine = 200;
+
+/// Trims and collapses repeated spaces / new lines into single spaces.
+String _cleanAddressLine(String v) => v.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+/// Same address = same text (ignoring case / spacing) + same pincode.
+String _addressKey(String line, String pin) =>
+    '${_cleanAddressLine(line).toLowerCase()}|${pin.trim()}';
+
+String? _validateAddressLine(String? v) {
+  final s = _cleanAddressLine(v ?? '');
+  if (s.isEmpty) return 'Enter your full address';
+  if (s.length < _kMinAddressLine) {
+    return 'Address is too short (minimum $_kMinAddressLine characters)';
+  }
+  if (s.length > _kMaxAddressLine) {
+    return 'Address is too long (maximum $_kMaxAddressLine characters)';
+  }
+  if (!RegExp(r'\p{L}', unicode: true).hasMatch(s)) {
+    return 'Address must include the street / area name, not only numbers';
+  }
+  if (RegExp(r"[^\p{L}\p{M}\p{N}\s,.\-/#()&'+:]", unicode: true).hasMatch(s)) {
+    return 'Remove special symbols from the address';
+  }
+  if (RegExp(r'(.)\1{5,}').hasMatch(s)) return 'Enter a real address';
+  return null;
+}
+
+String? _validatePincode(String? v) {
+  final s = (v ?? '').trim();
+  if (s.isEmpty) return 'Enter your pincode';
+  if (!RegExp(r'^\d{6}$').hasMatch(s)) return 'Enter a 6-digit pincode';
+  if (s.startsWith('0')) return 'Pincode cannot start with 0';
+  if (!isPincodeServiceable(s)) return 'Sorry, we do not deliver to $s yet';
+  return null;
 }
 
 /// Addresses live here for the whole app session (no database needed).
@@ -88,6 +132,12 @@ class SavedAddressesScreen extends StatefulWidget {
   }
 
   Future<void> _openAddSheet(BuildContext context) async {
+    if (savedAddresses.value.length >= kMaxSavedAddresses) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              'You can save up to $kMaxSavedAddresses addresses. Delete one to add a new address.')));
+      return;
+    }
     final location = await Navigator.push<_PickedAddress>(context,
         MaterialPageRoute(builder: (_) => const _AddressLocationScreen()));
     if (!context.mounted || location == null) return;
@@ -547,6 +597,12 @@ class _SavedAddressesScreenState extends State<SavedAddressesScreen> {
               : () {
             final a = list.firstWhere((e) => e.id == defId,
                 orElse: () => list.first);
+            if (!isPincodeServiceable(a.pincode)) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(
+                      'Sorry, we do not deliver to pincode ${a.pincode} yet. Please choose or edit the address.')));
+              return;
+            }
             Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -623,7 +679,34 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
   }
 
   Future<void> _save() async {
+    FocusScope.of(context).unfocus();
     if (_saving || !_formKey.currentState!.validate()) return;
+    final cleanLine = _cleanAddressLine(_line.text);
+    final cleanPin = _pin.text.trim();
+    final existing = widget.existingAddress;
+    // Max addresses (only when adding a new one).
+    if (existing == null && savedAddresses.value.length >= kMaxSavedAddresses) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              'You can save up to $kMaxSavedAddresses addresses. Delete one to add a new address.')));
+      return;
+    }
+    // Duplicate address (same text + pincode already saved).
+    final key = _addressKey(cleanLine, cleanPin);
+    final duplicate = savedAddresses.value
+        .any((a) => a.id != existing?.id && _addressKey(a.line, a.pincode) == key);
+    if (duplicate) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This address is already saved.')));
+      return;
+    }
+    // Nothing changed while editing -> no need to write.
+    if (existing != null &&
+        existing.label == label &&
+        _addressKey(existing.line, existing.pincode) == key) {
+      Navigator.pop(context);
+      return;
+    }
     final collection = _addressCollection;
     if (collection == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -631,12 +714,11 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
       return;
     }
     setState(() => _saving = true);
-    final existing = widget.existingAddress;
     try {
       final values = <String, dynamic>{
         'label': label,
-        'line': _line.text.trim(),
-        'pincode': _pin.text.trim(),
+        'line': cleanLine,
+        'pincode': cleanPin,
         'updatedAt': FieldValue.serverTimestamp(),
       };
       String savedId;
@@ -651,8 +733,8 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
       final saved = SavedAddress(
           id: savedId,
           label: label,
-          line: _line.text.trim(),
-          pincode: _pin.text.trim());
+          line: cleanLine,
+          pincode: cleanPin);
       final updated = [
         ...savedAddresses.value.where((item) => item.id != savedId),
         saved
@@ -664,9 +746,16 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
       }
       if (mounted) Navigator.pop(context);
     } catch (error) {
-      if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not save address: $error')));
+      if (mounted) {
+        final code = error is FirebaseException ? error.code : '';
+        final message = code == 'permission-denied'
+            ? 'This address could not be saved. Please sign in again or contact PhoneHub support.'
+            : (code == 'unavailable' || code == 'network-request-failed')
+            ? 'No internet connection. Please try again.'
+            : 'Could not save address. Please try again.';
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -738,21 +827,21 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
             TextFormField(
               controller: _line,
               maxLines: 2,
+              textInputAction: TextInputAction.next,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
+              inputFormatters: [LengthLimitingTextInputFormatter(_kMaxAddressLine)],
               decoration: _deco('House no, street, area, city'),
-              validator: (v) => (v == null || v.trim().length < 8)
-                  ? 'Enter your full address'
-                  : null,
+              validator: _validateAddressLine,
             ),
             const SizedBox(height: 12),
             TextFormField(
               controller: _pin,
               keyboardType: TextInputType.number,
               maxLength: 6,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: _deco('Pincode').copyWith(counterText: ''),
-              validator: (v) =>
-              (v == null || !RegExp(r'^\d{6}$').hasMatch(v.trim()))
-                  ? 'Enter a 6-digit pincode'
-                  : null,
+              validator: _validatePincode,
             ),
             const SizedBox(height: 16),
             GradientButton(

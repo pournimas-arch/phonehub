@@ -7,6 +7,56 @@ import 'theme.dart';
 import 'checkout_ui.dart';
 import 'package:phonehub/app_text.dart';
 
+// ---------------------------------------------------------------------------
+// Support request validation (logic only, no UI)
+// ---------------------------------------------------------------------------
+const int _kSubjectMin = 5;
+const int _kSubjectMax = 80;
+const int _kMessageMin = 15;
+const int _kMessageMax = 500;
+const int _kMaxOpenTickets = 5; // open / in-progress requests one customer can have
+const int _kTicketGapSeconds = 30; // minimum gap between two new requests
+
+// Kept at file level so closing and re-opening the sheet does not reset the gap.
+DateTime? _lastTicketAt;
+
+String _cleanSubject(String v) => v.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+/// Trims, turns every run of spaces into one, and keeps at most one blank line.
+String _cleanMessage(String v) => v
+    .trim()
+    .replaceAll(RegExp(r'[ \t]+'), ' ')
+    .replaceAll(RegExp(r'\n{3,}'), '\n\n');
+
+/// Rejects keyboard-smash, symbols only and repeated characters.
+String? _checkReadable(String s, String what) {
+  final letters = RegExp(r'\p{L}', unicode: true).allMatches(s).length;
+  if (letters == 0) return 'The $what must contain letters';
+  if (RegExp(r'(.)\1{5,}').hasMatch(s)) return 'Please write a real $what';
+  final visible = s.replaceAll(RegExp(r'\s'), '').length;
+  if (visible > 0 && letters / visible < 0.4) {
+    return 'The $what has too many symbols or numbers';
+  }
+  return null;
+}
+
+String? _validateTicketSubject(String? v) {
+  final s = _cleanSubject(v ?? '');
+  if (s.isEmpty) return 'Enter a subject';
+  if (s.length < _kSubjectMin) return 'Subject must be at least $_kSubjectMin characters';
+  if (s.length > _kSubjectMax) return 'Subject can be at most $_kSubjectMax characters';
+  return _checkReadable(s, 'subject');
+}
+
+String? _validateTicketMessage(String? v) {
+  final s = _cleanMessage(v ?? '');
+  if (s.isEmpty) return 'Please describe your issue';
+  if (s.length < _kMessageMin) return 'Please add a few more details (at least $_kMessageMin characters)';
+  if (s.length > _kMessageMax) return 'Message can be at most $_kMessageMax characters';
+  if (s.split(RegExp(r'\s+')).length < 3) return 'Please write at least 3 words';
+  return _checkReadable(s, 'message');
+}
+
 class _Faq {
   final String q, a;
   const _Faq(this.q, this.a);
@@ -661,28 +711,84 @@ class _NewTicketSheetState extends State<_NewTicketSheet> {
     border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
   );
 
+  void _warn(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text)));
+  }
+
   Future<void> _send() async {
+    // A second tap while the first request is still running would create a duplicate ticket.
+    if (_sending) return;
+    FocusScope.of(context).unfocus();
     if (!_formKey.currentState!.validate()) return;
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please sign in to contact support')));
+    if (!_categories.contains(_category)) {
+      _warn('Please choose a category');
       return;
     }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _warn('Please sign in to contact support');
+      return;
+    }
+
+    // Minimum gap between two new requests.
+    final last = _lastTicketAt;
+    if (last != null) {
+      final wait = _kTicketGapSeconds - DateTime.now().difference(last).inSeconds;
+      if (wait > 0) {
+        _warn('Please wait $wait seconds before sending another request.');
+        return;
+      }
+    }
+
+    final subject = _cleanSubject(_subject.text);
+    final message = _cleanMessage(_message.text);
+
     setState(() => _sending = true);
     try {
+      // Own tickets only (the Firestore rules allow this query). Used to stop duplicates
+      // and to limit how many requests can be open at the same time.
+      final mine = await FirebaseFirestore.instance
+          .collection('tickets')
+          .where('customerId', isEqualTo: user.uid)
+          .get();
+      var openCount = 0;
+      for (final d in mine.docs) {
+        final data = d.data();
+        final status = (data['status'] ?? 'Open').toString().toLowerCase();
+        if (status == 'closed' || status == 'resolved') continue;
+        openCount++;
+        final sameSubject = (data['subject'] ?? '').toString().trim().toLowerCase() == subject.toLowerCase();
+        if (sameSubject) {
+          if (!mounted) return;
+          setState(() => _sending = false);
+          _warn('You already have an open request with this subject. Please reply to it instead.');
+          return;
+        }
+      }
+      if (openCount >= _kMaxOpenTickets) {
+        if (!mounted) return;
+        setState(() => _sending = false);
+        _warn('You already have $openCount open requests. Please wait for a reply or close one first.');
+        return;
+      }
+
       final now = Timestamp.now();
       final ticketRef = FirebaseFirestore.instance.collection('tickets').doc();
       await ticketRef.set({
         'customerId': user.uid,
-        'subject': _subject.text.trim(),
+        'subject': subject,
         'category': _category,
         'status': 'Open',
         'created': now,
         'updatedAt': FieldValue.serverTimestamp(),
         'messages': [
-          {'fromAdmin': false, 'text': _message.text.trim(), 'time': now},
+          {'fromAdmin': false, 'text': message, 'time': now},
         ],
       });
+      _lastTicketAt = DateTime.now();
       if (mounted) Navigator.pop(context, true);
     } catch (_) {
       if (!mounted) return;
@@ -736,7 +842,7 @@ class _NewTicketSheetState extends State<_NewTicketSheet> {
                 controller: _subject,
                 maxLength: 80,
                 decoration: _deco('Subject').copyWith(counterText: ''),
-                validator: (v) => (v == null || v.trim().length < 3) ? 'Enter a subject' : null,
+                validator: _validateTicketSubject,
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -744,7 +850,7 @@ class _NewTicketSheetState extends State<_NewTicketSheet> {
                 maxLines: 4,
                 maxLength: 500,
                 decoration: _deco('Describe your issue'),
-                validator: (v) => (v == null || v.trim().length < 10) ? 'Please add a few more details' : null,
+                validator: _validateTicketMessage,
               ),
               const SizedBox(height: 12),
               GradientButton(
@@ -784,8 +890,13 @@ class _TicketChatSheetState extends State<_TicketChatSheet> {
   }
 
   Future<void> _sendReply() async {
-    final text = _reply.text.trim();
+    final text = _cleanMessage(_reply.text);
     if (text.isEmpty || _sending) return;
+    // A reply may be only an order number, so only keyboard-smash is rejected here.
+    if (RegExp(r'(.)\1{9,}').hasMatch(text)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please write a real reply')));
+      return;
+    }
     if (text.length > 500) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Reply must be 500 characters or fewer.')),

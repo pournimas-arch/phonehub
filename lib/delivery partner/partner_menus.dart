@@ -47,6 +47,108 @@ List<Map<String, dynamic>> _maps(dynamic v) => v is List
 
 bool _isSameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
 
+// ------------------------------------------------------------ Input checks
+// One place for the rules of every form in this file (vehicle, bank, support request).
+
+/// Trims the text and turns several spaces into one.
+String _clean(String s) => s.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+/// A check gets its own (cleaned) text and the text of all fields, and returns an error text or null.
+typedef _FieldCheck = String? Function(String value, List<String> all);
+
+/// Words made of letters (vehicle type, fuel type, bank name ...).
+String? _checkWords(String v, String what, {int min = 2, int max = 30}) {
+  if (v.isEmpty) return 'Enter $what';
+  if (v.length < min) return 'Too short (minimum $min characters)';
+  if (v.length > max) return 'Too long (maximum $max characters)';
+  if (!RegExp(r"^\p{L}[\p{L} .'&()-]*$", unicode: true).hasMatch(v)) return 'Use letters only';
+  return null;
+}
+
+String? _checkPersonName(String v, List<String> all) {
+  if (v.isEmpty) return 'Enter the account holder name';
+  if (v.length < 3) return 'Too short (minimum 3 characters)';
+  if (v.length > 60) return 'Too long (maximum 60 characters)';
+  if (!RegExp(r"^\p{L}[\p{L} .'-]*$", unicode: true).hasMatch(v)) return 'Use letters only';
+  return null;
+}
+
+String _normVehicle(String v) => v.toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
+
+/// Indian number plate (MH12AB1234, MH121234) or BH series (22BH1234AA).
+/// A cycle has no plate, so the number may stay empty when the type says "cycle".
+String? _checkVehicleNo(String v, List<String> all) {
+  final n = _normVehicle(v);
+  final noPlate = all.length > 2 && RegExp('cycle', caseSensitive: false).hasMatch(all[2]);
+  if (n.isEmpty) return noPlate ? null : 'Enter the vehicle number';
+  final standard = RegExp(r'^[A-Z]{2}\d{1,2}[A-Z]{0,3}\d{4}$');
+  final bh = RegExp(r'^\d{2}BH\d{4}[A-Z]{1,2}$');
+  if (!standard.hasMatch(n) && !bh.hasMatch(n)) return 'Enter a valid number, for example MH12AB1234';
+  return null;
+}
+
+String? _checkVehicleModel(String v, List<String> all) {
+  if (v.isEmpty) return 'Enter the vehicle model';
+  if (v.length < 2) return 'Too short (minimum 2 characters)';
+  if (v.length > 40) return 'Too long (maximum 40 characters)';
+  return null;
+}
+
+String? _checkAccount(String v, List<String> all) {
+  final a = v.replaceAll(' ', '');
+  if (a.isEmpty) return 'Enter the account number';
+  if (!RegExp(r'^[0-9]{9,18}$').hasMatch(a)) return 'Account number must be 9 to 18 digits';
+  return null;
+}
+
+/// The account number typed a second time must be the same (a wrong number sends the payout to a stranger).
+String? _checkAccountAgain(String v, List<String> all) {
+  final a = v.replaceAll(' ', '');
+  if (a.isEmpty) return 'Re-enter the account number';
+  if (a != all[2].replaceAll(' ', '')) return 'Account numbers do not match';
+  return null;
+}
+
+String? _checkIfsc(String v, List<String> all) {
+  final c = v.replaceAll(' ', '').toUpperCase();
+  if (c.isEmpty) return 'Enter the IFSC code';
+  if (!RegExp(r'^[A-Z]{4}0[A-Z0-9]{6}$').hasMatch(c)) return 'Enter a valid IFSC, for example SBIN0001234';
+  return null;
+}
+
+/// The real id of one of this partner's orders for what was typed (with or without "#"), else null.
+String? _orderIdFor(String raw) {
+  final id = raw.replaceFirst('#', '').trim().toLowerCase();
+  if (id.isEmpty) return null;
+  for (final list in [orders.value, cancelledOrders.value, returnPickups.value]) {
+    for (final o in list) {
+      if (o.id.toLowerCase() == id) return o.id;
+    }
+  }
+  return null;
+}
+
+String? _checkOrderRef(String v, List<String> all) {
+  if (v.replaceFirst('#', '').trim().isEmpty) return null; // optional
+  return _orderIdFor(v) == null ? 'This order is not in your list' : null;
+}
+
+String? _checkIssue(String v, List<String> all) {
+  if (v.isEmpty) return 'Describe your issue';
+  if (v.length < 10) return 'Please write at least 10 characters';
+  return null;
+}
+
+/// Real image type from the first bytes ('image/jpeg', 'image/png', 'image/webp') or null.
+String? _mimeOf(List<int> b) {
+  if (b.length >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return 'image/jpeg';
+  if (b.length >= 4 && b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return 'image/png';
+  if (b.length >= 12 && b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 && b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+    return 'image/webp';
+  }
+  return null;
+}
+
 /// Small spinner card shown only while the first copy of the admin's text is loading.
 Widget _loadingCard() => _card(
   child: const Center(
@@ -455,8 +557,13 @@ void _openEditSheet(
       required String title,
       required List<String> labels,
       required List<String> values,
-      required ValueChanged<List<String>> onSave,
+      required Future<String?> Function(List<String> values) onSave,
       String button = 'Save',
+      List<_FieldCheck?>? checks,
+      List<TextInputType?>? keyboards,
+      List<TextCapitalization?>? capitalizations,
+      List<List<TextInputFormatter>?>? formatters,
+      List<int?>? maxLines,
     }) {
   showModalBottomSheet<void>(
     context: context,
@@ -471,6 +578,11 @@ void _openEditSheet(
       values: values,
       button: button,
       onSave: onSave,
+      checks: checks,
+      keyboards: keyboards,
+      capitalizations: capitalizations,
+      formatters: formatters,
+      maxLines: maxLines,
     ),
   );
 }
@@ -480,7 +592,14 @@ class _EditSheet extends StatefulWidget {
   final List<String> labels;
   final List<String> values;
   final String button;
-  final ValueChanged<List<String>> onSave;
+
+  /// Returns null when saved (the sheet then closes) or a message (the sheet stays open and shows it).
+  final Future<String?> Function(List<String> values) onSave;
+  final List<_FieldCheck?>? checks;
+  final List<TextInputType?>? keyboards;
+  final List<TextCapitalization?>? capitalizations;
+  final List<List<TextInputFormatter>?>? formatters;
+  final List<int?>? maxLines;
 
   const _EditSheet({
     required this.title,
@@ -488,6 +607,11 @@ class _EditSheet extends StatefulWidget {
     required this.values,
     required this.button,
     required this.onSave,
+    this.checks,
+    this.keyboards,
+    this.capitalizations,
+    this.formatters,
+    this.maxLines,
   });
 
   @override
@@ -498,6 +622,9 @@ class _EditSheetState extends State<_EditSheet> {
   late final List<TextEditingController> _controllers = [
     for (final v in widget.values) TextEditingController(text: v),
   ];
+  late final List<String?> _errors = List<String?>.filled(widget.labels.length, null);
+  bool _saving = false;
+  String? _formError;
 
   @override
   void dispose() {
@@ -507,10 +634,47 @@ class _EditSheetState extends State<_EditSheet> {
     super.dispose();
   }
 
+  T? _opt<T>(List<T?>? list, int i) => (list != null && i < list.length) ? list[i] : null;
+
   OutlineInputBorder _border(Color color) => OutlineInputBorder(
     borderRadius: BorderRadius.circular(12),
     borderSide: BorderSide(color: color, width: 1.2),
   );
+
+  Future<void> _submit() async {
+    if (_saving) return;
+    // several-line fields keep their line breaks, the others lose extra spaces
+    final result = [
+      for (int i = 0; i < _controllers.length; i++)
+        (_opt(widget.maxLines, i) ?? 1) > 1 ? _controllers[i].text.trim() : _clean(_controllers[i].text),
+    ];
+    final found = [
+      for (int i = 0; i < result.length; i++) _opt(widget.checks, i)?.call(result[i], result),
+    ];
+    if (found.any((e) => e != null)) {
+      setState(() {
+        for (int i = 0; i < found.length; i++) {
+          _errors[i] = found[i];
+        }
+        _formError = null;
+      });
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _formError = null;
+    });
+    final err = await widget.onSave(result);
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.pop(context);
+    } else {
+      setState(() {
+        _saving = false;
+        _formError = err;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -549,6 +713,19 @@ class _EditSheetState extends State<_EditSheet> {
             for (int i = 0; i < _controllers.length; i++) ...[
               TextField(
                 controller: _controllers[i],
+                keyboardType: _opt(widget.keyboards, i) ?? ((_opt(widget.maxLines, i) ?? 1) > 1 ? TextInputType.multiline : null),
+                textCapitalization: _opt(widget.capitalizations, i) ?? TextCapitalization.none,
+                inputFormatters: _opt(widget.formatters, i),
+                minLines: (_opt(widget.maxLines, i) ?? 1) > 1 ? 3 : 1,
+                maxLines: _opt(widget.maxLines, i) ?? 1,
+                onChanged: (_) {
+                  if (_errors[i] != null || _formError != null) {
+                    setState(() {
+                      _errors[i] = null;
+                      _formError = null;
+                    });
+                  }
+                },
                 style: const TextStyle(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w600,
@@ -560,6 +737,7 @@ class _EditSheetState extends State<_EditSheet> {
                     fontSize: 12,
                     color: AppColors.muted,
                   ),
+                  errorText: _errors[i],
                   isDense: true,
                   contentPadding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 14),
@@ -569,13 +747,16 @@ class _EditSheetState extends State<_EditSheet> {
               ),
               const SizedBox(height: 12),
             ],
+            if (_formError != null) ...[
+              Text(
+                _formError!,
+                style: const TextStyle(color: AppColors.danger, fontSize: 12, fontWeight: FontWeight.w600, height: 1.35),
+              ),
+              const SizedBox(height: 8),
+            ],
             const SizedBox(height: 6),
             ElevatedButton(
-              onPressed: () {
-                final result = [for (final c in _controllers) c.text.trim()];
-                Navigator.pop(context);
-                widget.onSave(result);
-              },
+              onPressed: _saving ? null : _submit,
               style: ElevatedButton.styleFrom(
                 backgroundColor: _teal,
                 foregroundColor: Colors.white,
@@ -589,7 +770,9 @@ class _EditSheetState extends State<_EditSheet> {
                   borderRadius: BorderRadius.circular(14),
                 ),
               ),
-              child: Text(widget.button),
+              child: _saving
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : Text(widget.button),
             ),
           ],
         ),
@@ -756,6 +939,11 @@ class _MyDocumentsScreenState extends State<MyDocumentsScreen> {
 
   /// Camera / gallery -> small JPEG -> saved for the admin to verify.
   Future<void> _pick(_Doc d) async {
+    // a verified document can only be changed by the admin (the database refuses it anyway)
+    if (_docStatusOf(PartnerService.instance.docs.value, d.key) == 'Verified') {
+      _toast(context, 'This document is already verified. Contact the admin to change it.', icon: Icons.info_outline_rounded);
+      return;
+    }
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
       backgroundColor: Colors.white,
@@ -785,12 +973,22 @@ class _MyDocumentsScreenState extends State<MyDocumentsScreen> {
     if (source == null || !mounted) return;
     setState(() => _busy = d.key);
     try {
-      final file = await ImagePicker().pickImage(source: source, maxWidth: 1280, maxHeight: 1280, imageQuality: 60);
+      // a little smaller than before, so the photo fits the 650 KB limit of the document
+      final file = await ImagePicker().pickImage(source: source, maxWidth: 1100, maxHeight: 1100, imageQuality: 50);
       if (file == null) return;
       final bytes = await file.readAsBytes();
-      final uri = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+      if (bytes.length < 3000) {
+        if (mounted) _toast(context, 'This photo looks empty. Please take it again.', icon: Icons.error_outline_rounded);
+        return;
+      }
+      final mime = _mimeOf(bytes);
+      if (mime == null) {
+        if (mounted) _toast(context, 'Please use a JPG, PNG or WEBP photo.', icon: Icons.error_outline_rounded);
+        return;
+      }
+      final uri = 'data:$mime;base64,${base64Encode(bytes)}';
       if (uri.length > 650000) {
-        if (mounted) _toast(context, 'Photo is too large. Please take a smaller photo.', icon: Icons.error_outline_rounded);
+        if (mounted) _toast(context, 'Photo is too large (${(uri.length / 1024).round()} KB, limit ${(650000 / 1024).round()} KB). Please take a smaller photo.', icon: Icons.error_outline_rounded);
         return;
       }
       final err = await PartnerService.instance.uploadDocument(d.key, uri);
@@ -842,11 +1040,17 @@ class _MyDocumentsScreenState extends State<MyDocumentsScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          _outlineButton(
-            busy ? 'Uploading…' : (status == 'Not uploaded' ? 'Upload' : 'Replace document'),
-            Icons.upload_file_rounded,
-            busy ? () {} : () => _pick(d),
-          ),
+          if (status == 'Verified')
+            const Text(
+              'Verified documents can only be changed by the admin.',
+              style: TextStyle(color: AppColors.muted, fontSize: 11.5),
+            )
+          else
+            _outlineButton(
+              busy ? 'Uploading…' : (status == 'Not uploaded' ? 'Upload' : 'Replace document'),
+              Icons.upload_file_rounded,
+              busy ? () {} : () => _pick(d),
+            ),
         ],
       ),
     );
@@ -913,15 +1117,28 @@ class _VehicleDetailsScreenState extends State<VehicleDetailsScreen> {
       title: 'Edit vehicle details',
       labels: const ['Vehicle number', 'Vehicle model', 'Vehicle type (e.g. Bike)', 'Fuel type (e.g. Petrol)'],
       values: [_s(d, 'vehicleNo'), _s(d, 'vehicleModel'), _s(d, 'vehicleType'), _s(d, 'fuelType')],
+      checks: [
+        _checkVehicleNo,
+        _checkVehicleModel,
+            (v, all) => _checkWords(v, 'the vehicle type', max: 20),
+            (v, all) => _checkWords(v, 'the fuel type', max: 20),
+      ],
+      capitalizations: const [TextCapitalization.characters, TextCapitalization.words, TextCapitalization.words, TextCapitalization.words],
+      formatters: [
+        [LengthLimitingTextInputFormatter(14), FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9 -]'))],
+        [LengthLimitingTextInputFormatter(40)],
+        [LengthLimitingTextInputFormatter(20)],
+        [LengthLimitingTextInputFormatter(20)],
+      ],
       onSave: (v) async {
         final err = await PartnerService.instance.saveFields({
-          'vehicleNo': v[0].toUpperCase(),
+          'vehicleNo': _normVehicle(v[0]),
           'vehicleModel': v[1],
           'vehicleType': v[2],
           'fuelType': v[3],
         });
-        if (!mounted) return;
-        _toast(context, err ?? 'Vehicle details updated', icon: err == null ? null : Icons.error_outline_rounded);
+        if (err == null && mounted) _toast(context, 'Vehicle details updated');
+        return err;
       },
     );
   }
@@ -1007,28 +1224,35 @@ class _BankAccountScreenState extends State<BankAccountScreen> {
         'Account holder name',
         'Bank name',
         'Account number',
+        'Re-enter account number',
         'IFSC code',
       ],
-      values: [_s(d, 'bankHolder'), _s(d, 'bankName'), _s(d, 'bankAccount'), _s(d, 'bankIfsc')],
+      values: [_s(d, 'bankHolder'), _s(d, 'bankName'), _s(d, 'bankAccount'), _s(d, 'bankAccount'), _s(d, 'bankIfsc')],
+      checks: [
+        _checkPersonName,
+            (v, all) => _checkWords(v, 'the bank name', max: 40),
+        _checkAccount,
+        _checkAccountAgain,
+        _checkIfsc,
+      ],
+      keyboards: const [null, null, TextInputType.number, TextInputType.number, TextInputType.text],
+      capitalizations: const [TextCapitalization.words, TextCapitalization.words, null, null, TextCapitalization.characters],
+      formatters: [
+        [LengthLimitingTextInputFormatter(60)],
+        [LengthLimitingTextInputFormatter(40)],
+        [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(18)],
+        [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(18)],
+        [FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')), LengthLimitingTextInputFormatter(11)],
+      ],
       onSave: (v) async {
-        final account = v[2].replaceAll(' ', '');
-        final ifsc = v[3].replaceAll(' ', '').toUpperCase();
-        if (account.isNotEmpty && !RegExp(r'^[0-9]{9,18}$').hasMatch(account)) {
-          _toast(context, 'Enter a valid account number (9–18 digits)', icon: Icons.error_outline_rounded);
-          return;
-        }
-        if (ifsc.isNotEmpty && !RegExp(r'^[A-Z]{4}0[A-Z0-9]{6}$').hasMatch(ifsc)) {
-          _toast(context, 'Enter a valid IFSC code (e.g. SBIN0001234)', icon: Icons.error_outline_rounded);
-          return;
-        }
         final err = await PartnerService.instance.saveFields({
           'bankHolder': v[0],
           'bankName': v[1],
-          'bankAccount': account,
-          'bankIfsc': ifsc,
+          'bankAccount': v[2].replaceAll(' ', ''),
+          'bankIfsc': v[4].replaceAll(' ', '').toUpperCase(),
         });
-        if (!mounted) return;
-        _toast(context, err ?? 'Bank details updated', icon: err == null ? null : Icons.error_outline_rounded);
+        if (err == null && mounted) _toast(context, 'Bank details updated');
+        return err;
       },
     );
   }
@@ -1612,18 +1836,20 @@ class _HelpSupportScreenState extends State<HelpSupportScreen> {
       labels: const ['Order ID (optional)', 'Describe your issue'],
       values: const ['', ''],
       button: 'Submit',
+      checks: [_checkOrderRef, _checkIssue],
+      formatters: [
+        [LengthLimitingTextInputFormatter(40)],
+        [LengthLimitingTextInputFormatter(500)],
+      ],
+      maxLines: const [1, 5],
       onSave: (v) async {
-        if (v[1].isEmpty) {
-          if (mounted) _toast(context, 'Please describe your issue', icon: Icons.error_outline_rounded);
-          return;
+        // the order id is saved exactly as it is in the system, not as it was typed
+        final orderId = _orderIdFor(v[0]) ?? '';
+        final err = await _sendTicket(orderId, v[1]);
+        if (err == null && mounted) {
+          _toast(context, 'Issue submitted. Support will contact you.', icon: Icons.support_agent_rounded);
         }
-        final err = await _sendTicket(v[0], v[1]);
-        if (!mounted) return;
-        _toast(
-          context,
-          err ?? 'Issue submitted. Support will contact you.',
-          icon: err == null ? Icons.support_agent_rounded : Icons.error_outline_rounded,
-        );
+        return err;
       },
     );
   }

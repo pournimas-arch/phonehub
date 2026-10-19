@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'admin_theme.dart';
 import 'admin_data.dart';
 
@@ -7,6 +8,47 @@ const double _fHeader = 18;
 const double _fTitle = 12;
 const double _fBody = 10.5;
 const double _fSmall = 9.5;
+
+// -----------------------------------------------------------------------------
+// Validation helpers (logic only, no UI)
+// -----------------------------------------------------------------------------
+
+String _nClean(String v) => v.trim().replaceAll(RegExp(r'[ \t]+'), ' ').replaceAll(RegExp(r'\n{3,}'), '\n\n');
+
+/// Rejects keyboard-smash, symbols only and shouting in capital letters.
+String? _nReadable(String s, String what) {
+  final letters = RegExp(r'\p{L}', unicode: true).allMatches(s).length;
+  if (letters == 0) return 'The $what must contain words';
+  if (RegExp(r'(.)\1{5,}').hasMatch(s)) return 'Please write a real $what';
+  final visible = s.replaceAll(RegExp(r'\s'), '').length;
+  if (visible > 0 && letters / visible < 0.4) return 'The $what has too many symbols or numbers';
+  return null;
+}
+
+String? _validateNoticeTitle(String raw) {
+  final s = _nClean(raw);
+  if (s.isEmpty) return 'Add a title';
+  if (s.length < 3) return 'Title must be at least 3 characters';
+  if (s.length > 60) return 'Title can be at most 60 characters';
+  return _nReadable(s, 'title');
+}
+
+String? _validateNoticeBody(String raw) {
+  final s = _nClean(raw);
+  if (s.isEmpty) return 'Add a message';
+  if (s.length < 10) return 'Message must be at least 10 characters';
+  if (s.length > 240) return 'Message can be at most 240 characters';
+  if (s.split(RegExp(r'\s+')).length < 3) return 'Write at least 3 words in the message';
+  return _nReadable(s, 'message');
+}
+
+// The same notification (title + message + audience) is blocked for 5 minutes, so one tap
+// repeated by mistake cannot spam every customer with the same push.
+const Duration _kNoticeRepeatBlock = Duration(minutes: 5);
+final Map<String, DateTime> _recentNotices = <String, DateTime>{};
+
+String _noticeKey(String title, String body, String audience) =>
+    '${title.toLowerCase()}|${body.toLowerCase()}|$audience';
 
 // -----------------------------------------------------------------------------
 // Small shared helpers
@@ -179,6 +221,7 @@ class _SendTabState extends State<_SendTab> {
   final _title = TextEditingController();
   final _body = TextEditingController();
   String audience = 'All customers';
+  bool _sending = false;
 
   static const audiences = ['All customers', 'Customers with orders', 'New customers (no orders)', 'Customers with wishlist items', 'Delivery partners'];
 
@@ -225,17 +268,57 @@ class _SendTabState extends State<_SendTab> {
   }
 
   Future<void> _send() async {
-    if (_title.text.trim().isEmpty || _body.text.trim().isEmpty) {
-      snack(context, 'Add a title and a message');
+    if (_sending) return;
+    FocusScope.of(context).unfocus();
+
+    final titleError = _validateNoticeTitle(_title.text);
+    if (titleError != null) {
+      snack(context, titleError);
       return;
     }
-    final ok = await confirmDialog(context, 'Send to $_reach $_noun?', '"${_title.text.trim()}" will be sent to: $audience.', yes: 'Send');
-    if (!ok) return;
-    store.sendNotification(_title.text.trim(), _body.text.trim(), audience);
+    final bodyError = _validateNoticeBody(_body.text);
+    if (bodyError != null) {
+      snack(context, bodyError);
+      return;
+    }
+    if (!audiences.contains(audience)) {
+      snack(context, 'Choose who should receive this notification');
+      return;
+    }
+
+    // Nobody would receive it, so there is nothing to send.
+    if (_reach == 0) {
+      snack(context, _toPartners
+          ? 'No delivery partner has logged in yet, so nobody can receive this'
+          : 'No customers match "$audience"');
+      return;
+    }
+
+    final title = _nClean(_title.text);
+    final body = _nClean(_body.text);
+
+    // Same message to the same audience was just sent.
+    final key = _noticeKey(title, body, audience);
+    final prev = _recentNotices[key];
+    if (prev != null && DateTime.now().difference(prev) < _kNoticeRepeatBlock) {
+      final left = _kNoticeRepeatBlock.inSeconds - DateTime.now().difference(prev).inSeconds;
+      snack(context, 'This exact notification was already sent. Wait ${(left / 60).ceil()} min or change the text.');
+      return;
+    }
+
+    setState(() => _sending = true);
+    final ok = await confirmDialog(context, 'Send to $_reach $_noun?', '"$title" will be sent to: $audience.', yes: 'Send');
+    if (!mounted) return;
+    if (!ok) {
+      setState(() => _sending = false);
+      return;
+    }
+    store.sendNotification(title, body, audience);
+    _recentNotices[key] = DateTime.now();
     _title.clear();
     _body.clear();
-    setState(() {});
-    if (mounted) snack(context, 'Notification sent');
+    setState(() => _sending = false);
+    snack(context, 'Notification sent');
   }
 
   @override
@@ -693,6 +776,9 @@ class _TicketDetailScreenState extends State<TicketDetailScreen> {
                       Expanded(
                         child: TextField(
                           controller: _reply,
+                          maxLength: 500,
+                          maxLengthEnforcement: MaxLengthEnforcement.enforced,
+                          buildCounter: (context, {required currentLength, required isFocused, maxLength}) => null,
                           style: const TextStyle(fontSize: _fBody + 1),
                           decoration: _dec('', hint: 'Type your reply...').copyWith(labelText: null, filled: true, fillColor: Colors.white),
                         ),
@@ -701,8 +787,16 @@ class _TicketDetailScreenState extends State<TicketDetailScreen> {
                       IconButton.filled(
                         style: IconButton.styleFrom(backgroundColor: AC.primary, minimumSize: const Size(46, 46)),
                         onPressed: () {
-                          final text = _reply.text.trim();
+                          final text = _nClean(_reply.text);
                           if (text.isEmpty) return;
+                          if (text.length > 500) {
+                            snack(context, 'A reply can be at most 500 characters');
+                            return;
+                          }
+                          if (RegExp(r'(.)\1{9,}').hasMatch(text)) {
+                            snack(context, 'Please write a real reply');
+                            return;
+                          }
                           store.addTicketReply(t, text);
                           _reply.clear();
                         },
@@ -825,12 +919,30 @@ class _FaqEditorState extends State<_FaqEditor> {
     super.dispose();
   }
 
+  String? get _qError {
+    final q = _nClean(_q.text);
+    if (q.isEmpty) return 'Required';
+    if (q.length < 5) return 'Write the full question (at least 5 characters)';
+    if (q.length > 150) return 'Question can be at most 150 characters';
+    final readable = _nReadable(q, 'question');
+    if (readable != null) return readable;
+    final clash = store.faqs.any((f) => f != widget.faq && _nClean(f.q).toLowerCase() == q.toLowerCase());
+    if (clash) return 'This question already exists';
+    return null;
+  }
+
+  String? get _aError {
+    final a = _nClean(_a.text);
+    if (a.isEmpty) return 'Required';
+    if (a.length < 10) return 'Write a helpful answer (at least 10 characters)';
+    if (a.length > 600) return 'Answer can be at most 600 characters';
+    return _nReadable(a, 'answer');
+  }
+
   void _save() {
     setState(() => _tried = true);
-    final q = _q.text.trim();
-    final a = _a.text.trim();
-    if (q.isEmpty || a.isEmpty) return;
-    Navigator.pop(context, (q: q, a: a));
+    if (_qError != null || _aError != null) return;
+    Navigator.pop(context, (q: _nClean(_q.text), a: _nClean(_a.text)));
   }
 
   @override
@@ -845,15 +957,23 @@ class _FaqEditorState extends State<_FaqEditor> {
           const SizedBox(height: 14),
           TextField(
             controller: _q,
+            maxLength: 150,
+            onChanged: (_) {
+              if (_tried) setState(() {});
+            },
             style: const TextStyle(fontSize: _fBody + 1, fontWeight: FontWeight.w600),
-            decoration: _dec('Question', error: _tried && _q.text.trim().isEmpty ? 'Required' : null),
+            decoration: _dec('Question', error: _tried ? _qError : null).copyWith(counterText: ''),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _a,
             maxLines: 3,
+            maxLength: 600,
+            onChanged: (_) {
+              if (_tried) setState(() {});
+            },
             style: const TextStyle(fontSize: _fBody + 1, fontWeight: FontWeight.w600),
-            decoration: _dec('Answer', error: _tried && _a.text.trim().isEmpty ? 'Required' : null),
+            decoration: _dec('Answer', error: _tried ? _aError : null).copyWith(counterText: ''),
           ),
           const SizedBox(height: 16),
           _bigButton('Save', _save),

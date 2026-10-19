@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:phonehub/Admin/admin_theme.dart';
 import 'package:phonehub/Admin/admin_data.dart';
@@ -88,12 +89,12 @@ class _VariantSheetState extends State<_VariantSheet> {
                 const SizedBox(height: 14),
                 Row(
                   children: [
-                    Expanded(child: formField('Selling price', _price, type: TextInputType.number, prefix: '₹ ', validator: (v) => validateNumber(v, min: 1))),
+                    Expanded(child: phoneFormField('Selling price', _price, type: TextInputType.number, prefix: '₹ ', digitsOnly: true, maxLength: 6, validator: (v) => validatePrice(v, label: 'selling price'))),
                     const SizedBox(width: 12),
-                    Expanded(child: formField('MRP', _mrp, type: TextInputType.number, prefix: '₹ ', validator: (v) => validateNumber(v, min: 1))),
+                    Expanded(child: phoneFormField('MRP', _mrp, type: TextInputType.number, prefix: '₹ ', digitsOnly: true, maxLength: 6, validator: (v) => validateMrp(v, _price.text))),
                   ],
                 ),
-                formField('Stock (units)', _stock, type: TextInputType.number, validator: (v) => validateNumber(v, min: 0)),
+                phoneFormField('Stock (units)', _stock, type: TextInputType.number, digitsOnly: true, maxLength: 4, validator: validateStock),
                 const SizedBox(height: 16),
                 SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _save, child: Text(widget.initial == null ? 'Add variant' : 'Save variant'))),
               ],
@@ -231,13 +232,13 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
   }
 
   PhoneDetails _buildDetails() => PhoneDetails(
-    display: _display.text.trim(),
-    processor: _chip.text.trim(),
-    ram: _ram.text.trim(),
-    rearCamera: _rear.text.trim(),
-    frontCamera: _front.text.trim(),
-    batteryMah: _mah.text.trim(),
-    os: _os.text.trim(),
+    display: cleanText(_display.text),
+    processor: cleanText(_chip.text),
+    ram: cleanText(_ram.text),
+    rearCamera: cleanText(_rear.text),
+    frontCamera: cleanText(_front.text),
+    batteryMah: cleanText(_mah.text),
+    os: cleanText(_os.text),
     qualityChecks: _ordered(kQualityCheckPresets, _checks),
     inBox: _ordered(kInBoxPresets, _inBox),
     imageLabels: [for (final im in _images) im.label],
@@ -249,6 +250,9 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
     noCostEmi: _emi,
   );
 
+  /// Size of all photos as they will be stored inside the product document.
+  int get _photosBytes => _images.fold<int>(0, (sum, im) => sum + (im.isSaved ? storedImageBytes(im.url!) : im.photo!.storedBytes));
+
   Future<void> _save({bool another = false}) async {
     if (_saving || _photoBusy) return;
     if (!_form.currentState!.validate()) {
@@ -259,8 +263,16 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
       snack(context, 'Add a brand first (More > Brands), then add the phone');
       return;
     }
-    final price = int.parse(_price.text.trim());
-    final mrp = int.parse(_mrp.text.trim());
+    if (!store.brands.any((b) => b.name == brand)) {
+      snack(context, 'The brand "$brand" no longer exists. Choose another brand (or add it in More > Brands).');
+      return;
+    }
+    final price = int.tryParse(_price.text.trim());
+    final mrp = int.tryParse(_mrp.text.trim());
+    if (price == null || mrp == null) {
+      snack(context, 'Please enter the selling price and MRP');
+      return;
+    }
     if (mrp < price) {
       snack(context, 'MRP cannot be lower than the selling price');
       return;
@@ -269,8 +281,19 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
       snack(context, 'An extra variant already uses $storage • $condition. Change it or remove that variant.');
       return;
     }
+    if (_variants.length > kMaxVariants) {
+      snack(context, 'You can add up to $kMaxVariants extra variants');
+      return;
+    }
 
-    final nameTxt = _name.text.trim();
+    // photos are saved inside the product, so all of them together must stay small
+    final photoError = validatePhotoTotal(_photosBytes);
+    if (photoError != null) {
+      snack(context, photoError);
+      return;
+    }
+
+    final nameTxt = cleanText(_name.text);
     final id = editing ? widget.phone!.id : store.nextPhoneId();
 
     // warn if the same phone already exists
@@ -280,15 +303,44 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
       if (!ok || !mounted) return;
     }
 
-    final battery = int.parse(_battery.text.trim());
-    final stockN = int.parse(_stock.text.trim());
+    // same colour twice gives a flat colour, ask once
+    if (c1 == c2) {
+      final ok = await confirmDialog(context, 'Same colour twice', 'The main colour and the second colour are the same, so the phone card will look flat. Save anyway?', yes: 'Save anyway');
+      if (!ok || !mounted) return;
+    }
+
+    // the same photo label on more than one photo (except "Other") is probably a mistake
+    final seenLabels = <String>{};
+    String? repeatedLabel;
+    for (final im in _images) {
+      if (im.label != 'Other' && !seenLabels.add(im.label)) {
+        repeatedLabel = im.label;
+        break;
+      }
+    }
+    if (repeatedLabel != null) {
+      final ok = await confirmDialog(context, 'Repeated photo label', 'More than one photo is labelled "$repeatedLabel". Tap the dark bar on a photo to change its label. Save anyway?', yes: 'Save anyway');
+      if (!ok || !mounted) return;
+    }
+
+    final battery = int.tryParse(_battery.text.trim());
+    final stockN = int.tryParse(_stock.text.trim());
+    if (battery == null || stockN == null) {
+      snack(context, 'Please enter the battery health and the stock');
+      return;
+    }
     setState(() => _saving = true);
 
     try {
       final allImages = <String>[for (final im in _images) im.isSaved ? im.url! : im.photo!.toDataUri()];
       final details = _buildDetails();
+      String? error;
       if (editing) {
         final p = widget.phone!;
+        // keep the old values so they can be put back if saving fails
+        final oldName = p.name, oldBrand = p.brand, oldStorage = p.storage, oldCondition = p.condition;
+        final oldPrice = p.price, oldMrp = p.mrp, oldBattery = p.battery, oldStock = p.stock;
+        final oldColors = p.colors, oldImages = p.images, oldDetails = p.details, oldActive = p.active;
         p
           ..name = nameTxt
           ..brand = brand
@@ -302,8 +354,25 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
           ..images = allImages
           ..details = details
           ..active = _active;
-        store.changed();
-        if (mounted) snack(context, '${p.name} updated');
+        error = await store.saveEditedPhone(p);
+        if (error != null) {
+          p
+            ..name = oldName
+            ..brand = oldBrand
+            ..storage = oldStorage
+            ..condition = oldCondition
+            ..price = oldPrice
+            ..mrp = oldMrp
+            ..battery = oldBattery
+            ..stock = oldStock
+            ..colors = oldColors
+            ..images = oldImages
+            ..details = oldDetails
+            ..active = oldActive;
+          store.changed();
+        } else if (mounted) {
+          snack(context, '${p.name} updated');
+        }
       } else {
         final np = Phone(
           id: id,
@@ -321,8 +390,13 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
           details: details,
         );
         np.active = _active;
-        store.addPhone(np);
-        if (mounted) snack(context, '$nameTxt added');
+        error = await store.addPhone(np, reportToStore: false);
+        if (error == null && mounted) snack(context, '$nameTxt added');
+      }
+      if (error != null) {
+        // saving failed: stay on this screen with everything still filled in
+        if (mounted) snack(context, error);
+        return;
       }
       _dirty = false;
       if (!mounted) return;
@@ -364,23 +438,52 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
     if (source == null || !mounted) return;
     setState(() => _photoBusy = true);
     try {
+      final picked = <PickedPhoto>[];
+      String? notice;
       if (source == 'gallery') {
-        final picked = await PhoneImageService.pickFromGallery(remaining: remaining);
-        if (mounted && picked.isNotEmpty) {
-          _markDirty();
-          setState(() {
-            for (final ph in picked) {
-              _images.add(_FormImage.picked(ph, defaultPhotoLabel(_images.length)));
-            }
-          });
-        }
+        picked.addAll(await PhoneImageService.pickFromGallery(remaining: remaining));
+        notice = PhoneImageService.lastNotice;
       } else {
-        final picked = await PhoneImageService.pickFromCamera();
-        if (mounted && picked != null) {
-          _markDirty();
-          setState(() => _images.add(_FormImage.picked(picked, defaultPhotoLabel(_images.length))));
-        }
+        final one = await PhoneImageService.pickFromCamera();
+        if (one != null) picked.add(one);
       }
+      if (!mounted) return;
+
+      // skip a photo that is already added, and any photo that would push the total size over the limit
+      var total = _photosBytes;
+      var duplicates = 0;
+      var tooBig = 0;
+      final added = <PickedPhoto>[];
+      for (final ph in picked) {
+        final same = _images.any((im) => !im.isSaved && listEquals(im.photo!.bytes, ph.bytes)) || added.any((x) => listEquals(x.bytes, ph.bytes));
+        if (same) {
+          duplicates++;
+          continue;
+        }
+        if (total + ph.storedBytes > kMaxPhotoTotalBytes) {
+          tooBig++;
+          continue;
+        }
+        total += ph.storedBytes;
+        added.add(ph);
+      }
+      if (added.isNotEmpty) {
+        _markDirty();
+        setState(() {
+          for (final ph in added) {
+            _images.add(_FormImage.picked(ph, defaultPhotoLabel(_images.length)));
+          }
+        });
+      }
+      final notes = <String>[
+        if (notice != null) notice,
+        if (duplicates > 0) '$duplicates photo${duplicates == 1 ? ' was' : 's were'} already added.',
+        if (tooBig > 0) '$tooBig photo${tooBig == 1 ? ' was' : 's were'} not added: all photos together can be only ${formatKb(kMaxPhotoTotalBytes)}.',
+      ];
+      if (notes.isNotEmpty && mounted) snack(context, notes.join(' '));
+    } on StateError catch (e) {
+      // our own readable messages (empty photo, wrong type, photo too large)
+      if (mounted) snack(context, e.message.toString());
     } catch (e) {
       if (mounted) snack(context, 'Could not select photo. Check camera/gallery permission and try again.');
       debugPrint('PhoneHub photo selection failed: $e');
@@ -413,10 +516,14 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
 
   void _bumpStock(int d) {
     final n = (int.tryParse(_stock.text.trim()) ?? 0) + d;
-    _stock.text = '${n < 0 ? 0 : n}';
+    _stock.text = '${n < 0 ? 0 : (n > kMaxStock ? kMaxStock : n)}';
   }
 
   Future<void> _openVariant({int? index}) async {
+    if (index == null && _variants.length >= kMaxVariants) {
+      snack(context, 'You can add up to $kMaxVariants extra variants');
+      return;
+    }
     final taken = <String>{
       '$storage|$condition',
       for (int i = 0; i < _variants.length; i++)
@@ -504,7 +611,7 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
   );
 
   /// Tick-able chips (several can be on) plus "+ Add" for a custom item.
-  Widget _multiChips(List<String> presets, List<String> selected, {required String addTitle, required String addLabel}) {
+  Widget _multiChips(List<String> presets, List<String> selected, {required String addTitle, required String addLabel, required int maxItems}) {
     final all = [...presets, ...selected.where((s) => !presets.contains(s))];
     return Wrap(
       spacing: 8,
@@ -530,14 +637,16 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
           backgroundColor: AC.primary.withValues(alpha: 0.06),
           side: BorderSide(color: AC.primary.withValues(alpha: 0.35)),
           onPressed: () async {
-            final t = await askTextDialog(context, addTitle, addLabel);
-            if (t == null || !mounted) return;
-            if (selected.any((s) => s.toLowerCase() == t.toLowerCase())) {
-              snack(context, '$t is already added');
+            if (selected.length >= maxItems) {
+              snack(context, 'You can add up to $maxItems items here');
               return;
             }
+            final t = await askTextDialog(context, addTitle, addLabel, existing: selected);
+            if (t == null || !mounted) return;
+            // typing the name of a ready-made chip just ticks that chip
+            final preset = presets.where((x) => x.toLowerCase() == t.toLowerCase()).toList();
             _markDirty();
-            setState(() => selected.add(t));
+            setState(() => selected.add(preset.isEmpty ? t : preset.first));
           },
         ),
       ],
@@ -731,6 +840,11 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
         ),
         const SizedBox(height: 8),
         Text(
+          'Photo size: ${formatKb(_photosBytes)} of ${formatKb(kMaxPhotoTotalBytes)}',
+          style: TextStyle(color: _photosBytes > kMaxPhotoTotalBytes ? AC.danger : AC.muted, fontSize: (AppText.small - 1), fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 4),
+        Text(
           'Tap a photo to make it the cover. Tap the dark bar on a photo to set its label (Front view, Back view, In the box). Customers see these labels in the gallery.',
           style: const TextStyle(color: AC.muted, fontSize: (AppText.small - 1), height: 1.35),
         ),
@@ -760,7 +874,7 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          formField('Phone name', _name),
+          phoneFormField('Phone name', _name, maxLength: kMaxPhoneNameLength, validator: validatePhoneName),
           _label('BRAND'),
           _choices([
             ...store.brands.map((b) => b.name),
@@ -793,7 +907,7 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          formField('Battery health %', _battery, type: TextInputType.number, validator: (x) => validateNumber(x, min: 1, max: 100)),
+          phoneFormField('Battery health %', _battery, type: TextInputType.number, digitsOnly: true, maxLength: 3, validator: (x) => validateNumber(x, min: 1, max: 100)),
           Row(
             children: [
               Icon(Icons.battery_charging_full_rounded, size: 18, color: bc),
@@ -892,13 +1006,13 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _note('Shown in the Specifications table on the customer product page. Leave a field blank to hide that row.'),
-        formField('Display (e.g. 6.1" OLED, 120 Hz)', _display, validator: (_) => null),
-        formField('Processor (e.g. Snapdragon 888)', _chip, validator: (_) => null),
-        formField('RAM (e.g. 8 GB)', _ram, validator: (_) => null),
-        formField('Rear camera (e.g. 50 MP + 8 MP)', _rear, validator: (_) => null),
-        formField('Front camera (e.g. 16 MP)', _front, validator: (_) => null),
-        formField('Battery capacity (e.g. 5000 mAh)', _mah, validator: (_) => null),
-        formField('Operating system (e.g. Android 13)', _os, validator: (_) => null),
+        phoneFormField('Display (e.g. 6.1" OLED, 120 Hz)', _display, maxLength: kMaxSpecLength, validator: (v) => validateSpec(v, needDigit: true)),
+        phoneFormField('Processor (e.g. Snapdragon 888)', _chip, maxLength: kMaxSpecLength, validator: validateSpec),
+        phoneFormField('RAM (e.g. 8 GB)', _ram, maxLength: kMaxSpecLength, validator: (v) => validateSpec(v, needDigit: true)),
+        phoneFormField('Rear camera (e.g. 50 MP + 8 MP)', _rear, maxLength: kMaxSpecLength, validator: (v) => validateSpec(v, needDigit: true)),
+        phoneFormField('Front camera (e.g. 16 MP)', _front, maxLength: kMaxSpecLength, validator: (v) => validateSpec(v, needDigit: true)),
+        phoneFormField('Battery capacity (e.g. 5000 mAh)', _mah, maxLength: kMaxSpecLength, validator: (v) => validateSpec(v, needDigit: true)),
+        phoneFormField('Operating system (e.g. Android 13)', _os, maxLength: kMaxSpecLength, validator: validateSpec),
       ],
     ),
     hint: 'Optional',
@@ -996,9 +1110,9 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
                   children: [
                     Row(
                       children: [
-                        Expanded(child: formField('Selling price', _price, type: TextInputType.number, prefix: '₹ ', validator: (v) => validateNumber(v, min: 1))),
+                        Expanded(child: phoneFormField('Selling price', _price, type: TextInputType.number, prefix: '₹ ', digitsOnly: true, maxLength: 6, validator: (v) => validatePrice(v, label: 'selling price'))),
                         const SizedBox(width: 12),
-                        Expanded(child: formField('MRP', _mrp, type: TextInputType.number, prefix: '₹ ', validator: (v) => validateNumber(v, min: 1))),
+                        Expanded(child: phoneFormField('MRP', _mrp, type: TextInputType.number, prefix: '₹ ', digitsOnly: true, maxLength: 6, validator: (v) => validateMrp(v, _price.text))),
                       ],
                     ),
                     _priceHint(),
@@ -1013,7 +1127,7 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
                   children: [
                     Padding(padding: const EdgeInsets.only(top: 4), child: _roundBtn(Icons.remove_rounded, () => _bumpStock(-1))),
                     const SizedBox(width: 10),
-                    Expanded(child: formField('Stock (units)', _stock, type: TextInputType.number, validator: (v) => validateNumber(v, min: 0))),
+                    Expanded(child: phoneFormField('Stock (units)', _stock, type: TextInputType.number, digitsOnly: true, maxLength: 4, validator: validateStock)),
                     const SizedBox(width: 10),
                     Padding(padding: const EdgeInsets.only(top: 4), child: _roundBtn(Icons.add_rounded, () => _bumpStock(1))),
                   ],
@@ -1028,7 +1142,7 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _note('Tick the checks this phone passed. Customers see "${_checks.length}-point quality check" with these items.'),
-                    _multiChips(kQualityCheckPresets, _checks, addTitle: 'Add quality check', addLabel: 'Check name'),
+                    _multiChips(kQualityCheckPresets, _checks, addTitle: 'Add quality check', addLabel: 'Check name', maxItems: kMaxQualityChecks),
                   ],
                 ),
                 hint: '${_checks.length} selected',
@@ -1036,7 +1150,7 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
               _section(
                 Icons.inventory_rounded,
                 "What's in the box",
-                _multiChips(kInBoxPresets, _inBox, addTitle: 'Add box item', addLabel: 'Item name'),
+                _multiChips(kInBoxPresets, _inBox, addTitle: 'Add box item', addLabel: 'Item name', maxItems: kMaxBoxItems),
                 hint: '${_inBox.length} selected',
               ),
               _section(
@@ -1047,12 +1161,12 @@ class _PhoneFormScreenState extends State<PhoneFormScreen> {
                   children: [
                     Row(
                       children: [
-                        Expanded(child: formField('Warranty (months)', _warranty, type: TextInputType.number, validator: (v) => validateNumber(v, min: 0, max: 60))),
+                        Expanded(child: phoneFormField('Warranty (months)', _warranty, type: TextInputType.number, digitsOnly: true, maxLength: 2, validator: (v) => validateNumber(v, min: 0, max: 60))),
                         const SizedBox(width: 12),
-                        Expanded(child: formField('Return (days)', _return, type: TextInputType.number, validator: (v) => validateNumber(v, min: 0, max: 30))),
+                        Expanded(child: phoneFormField('Return (days)', _return, type: TextInputType.number, digitsOnly: true, maxLength: 2, validator: (v) => validateNumber(v, min: 0, max: 30))),
                       ],
                     ),
-                    formField('Delivery time (days)', _delivery, type: TextInputType.number, validator: (v) => validateNumber(v, min: 1, max: 15)),
+                    phoneFormField('Delivery time (days)', _delivery, type: TextInputType.number, digitsOnly: true, maxLength: 2, validator: (v) => validateNumber(v, min: 1, max: 15)),
                     const SizedBox(height: 4),
                     _switchRow('Cash on delivery', _cod ? 'Customers can pay when it arrives' : 'Online payment only', _cod, (v) => _cod = v),
                     _switchRow('No-cost EMI', _emi ? 'EMI offer is shown to customers' : 'EMI offer is hidden', _emi, (v) => _emi = v),

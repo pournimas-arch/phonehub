@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -14,6 +15,48 @@ const Color _cyan = Color(0xFF38D9FF);
 const Color _line = Color(0xFFDCE8FF);
 const Color _fieldFill = Color(0xFFF4F8FF);
 const Color _errorRed = Color(0xFFE5484D);
+
+// ---------------------------------------------------------------------------
+// Validation + abuse protection (logic only, no UI)
+// ---------------------------------------------------------------------------
+const int _kMaxEmailLength = 254; // RFC limit for a whole address
+const int _kMaxEmailLocalPart = 64; // RFC limit for the part before "@"
+const int _kResetCooldownSeconds = 60; // wait between two links for the SAME email
+const int _kResetMaxPerWindow = 5; // max links (any email) per window
+const Duration _kResetWindow = Duration(minutes: 15);
+
+// Same pattern as the login and register screens, so one email is valid everywhere.
+final RegExp _resetEmailFormat =
+RegExp(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$');
+
+// Kept at file level (not in the State) so closing and re-opening the screen does not
+// reset the timers. Firebase also rate limits, but this gives a clear message first.
+final Map<String, DateTime> _resetSentAt = <String, DateTime>{};
+final List<DateTime> _resetHistory = <DateTime>[];
+
+String? _validateResetEmail(String? value) {
+  final email = (value ?? '').trim();
+
+  if (email.isEmpty) return 'Please enter your email address';
+  if (email.length > _kMaxEmailLength) {
+    return 'Email is too long (max $_kMaxEmailLength characters)';
+  }
+  if (RegExp(r'\s').hasMatch(email)) return 'Email cannot contain spaces';
+  if (!email.contains('@')) return 'Email must contain @';
+  if (email.indexOf('@') != email.lastIndexOf('@')) {
+    return 'Email can contain only one @';
+  }
+
+  final local = email.substring(0, email.indexOf('@'));
+  if (local.isEmpty) return 'Enter the part before @';
+  if (local.length > _kMaxEmailLocalPart) return 'The part before @ is too long';
+  if (local.startsWith('.') || local.endsWith('.') || email.contains('..')) {
+    return 'Email cannot start/end with a dot or have two dots in a row';
+  }
+
+  if (!_resetEmailFormat.hasMatch(email)) return 'Enter a valid email address';
+  return null;
+}
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -33,6 +76,10 @@ class _ForgotPasswordScreenState
   bool _sent = false;
   bool _sending = false;
   String? _errorMessage;
+
+  // Seconds left before the reset link can be requested again for the current email.
+  int _cooldown = 0;
+  Timer? _cooldownTimer;
 
   late final AnimationController _glowController;
   late final Animation<double> _glowAnimation;
@@ -77,6 +124,7 @@ class _ForgotPasswordScreenState
   void dispose() {
     _emailController.dispose();
     _emailFocus.dispose();
+    _cooldownTimer?.cancel();
     _glowController.dispose();
     _entranceController.dispose();
     super.dispose();
@@ -120,6 +168,51 @@ class _ForgotPasswordScreenState
       );
   }
 
+  /// Seconds left before another link may be sent to [email] (0 = allowed).
+  int _secondsLeftFor(String email) {
+    final last = _resetSentAt[email];
+    if (last == null) return 0;
+    final left = _kResetCooldownSeconds - DateTime.now().difference(last).inSeconds;
+    return left > 0 ? left : 0;
+  }
+
+  /// Seconds left until the 15 minute request limit frees up (0 = allowed).
+  int _windowWaitSeconds() {
+    final now = DateTime.now();
+    _resetHistory.removeWhere((t) => now.difference(t) >= _kResetWindow);
+    if (_resetHistory.length < _kResetMaxPerWindow) return 0;
+    final wait = _kResetWindow.inSeconds - now.difference(_resetHistory.first).inSeconds;
+    return wait > 0 ? wait : 1;
+  }
+
+  String _waitText(int seconds) {
+    if (seconds < 60) return '$seconds seconds';
+    final m = (seconds / 60).ceil();
+    return '$m minute${m == 1 ? '' : 's'}';
+  }
+
+  void _markSent(String email) {
+    final now = DateTime.now();
+    _resetSentAt[email] = now;
+    _resetHistory.add(now);
+    _startCooldownTicker(email);
+  }
+
+  void _startCooldownTicker(String email) {
+    _cooldownTimer?.cancel();
+    setState(() => _cooldown = _secondsLeftFor(email));
+    if (_cooldown == 0) return;
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      final left = _secondsLeftFor(email);
+      setState(() => _cooldown = left);
+      if (left == 0) timer.cancel();
+    });
+  }
+
   Future<void> _sendResetEmail() async {
     if (_sending) return;
 
@@ -128,6 +221,26 @@ class _ForgotPasswordScreenState
     if (!_formKey.currentState!.validate()) return;
 
     final email = _emailController.text.trim().toLowerCase();
+
+    // Same email: wait for the cooldown (stops the "Resend" button being spammed).
+    final cooldownLeft = _secondsLeftFor(email);
+    if (cooldownLeft > 0) {
+      _showMessage(
+        'A reset link was just sent. You can request another in ${_waitText(cooldownLeft)}.',
+        isError: true,
+      );
+      return;
+    }
+
+    // Any email: too many links in a short time.
+    final windowWait = _windowWaitSeconds();
+    if (windowWait > 0) {
+      _showMessage(
+        'Too many reset requests. Please try again in ${_waitText(windowWait)}.',
+        isError: true,
+      );
+      return;
+    }
 
     setState(() {
       _sending = true;
@@ -141,6 +254,7 @@ class _ForgotPasswordScreenState
 
       if (!mounted) return;
 
+      _markSent(email);
       setState(() {
         _sent = true;
       });
@@ -151,6 +265,7 @@ class _ForgotPasswordScreenState
         case 'user-not-found':
         // Show the same confirmation as a successful request so the
         // screen does not disclose whether an email has an account.
+          _markSent(email);
           setState(() {
             _sent = true;
           });
@@ -568,21 +683,11 @@ class _ForgotPasswordScreenState
               fontWeight: FontWeight.w500,
             ),
             cursorColor: _blue,
-            validator: (value) {
-              final email = value?.trim() ?? '';
-
-              if (email.isEmpty) {
-                return 'Please enter your email address';
-              }
-
-              if (!RegExp(
-                r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
-              ).hasMatch(email)) {
-                return 'Enter a valid email address';
-              }
-
-              return null;
-            },
+            inputFormatters: [
+              LengthLimitingTextInputFormatter(_kMaxEmailLength),
+              FilteringTextInputFormatter.deny(RegExp(r'\s')),
+            ],
+            validator: _validateResetEmail,
             decoration: InputDecoration(
               hintText: 'you@example.com',
               hintStyle: const TextStyle(
@@ -781,7 +886,7 @@ class _ForgotPasswordScreenState
         SizedBox(
           width: double.infinity,
           child: OutlinedButton.icon(
-            onPressed: _sending ? null : _sendResetEmail,
+            onPressed: (_sending || _cooldown > 0) ? null : _sendResetEmail,
             icon: _sending
                 ? const SizedBox(
               width: 17,
@@ -796,7 +901,11 @@ class _ForgotPasswordScreenState
               size: 19,
             ),
             label: Text(
-              _sending ? 'Sending...' : 'Resend reset link',
+              _sending
+                  ? 'Sending...'
+                  : (_cooldown > 0
+                  ? 'Resend in ${_cooldown}s'
+                  : 'Resend reset link'),
             ),
             style: OutlinedButton.styleFrom(
               foregroundColor: _blue,

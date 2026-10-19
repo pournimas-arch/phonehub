@@ -1,8 +1,30 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:phonehub/delivery%20partner/app_theme.dart';
 import 'package:phonehub/delivery%20partner/orders_data.dart';
 import 'main_shell.dart';
 import 'package:phonehub/app_text.dart';
+
+/// Wrong-OTP protection for one order. Kept at file level (not inside the screen state),
+/// so leaving the screen and opening it again does NOT reset the counter.
+class _OtpGuard {
+  int wrong = 0; // wrong OTPs since the last lock
+  int level = 0; // how many times this order has been locked
+  DateTime? lockedUntil;
+}
+
+final Map<String, _OtpGuard> _otpGuards = <String, _OtpGuard>{};
+
+/// Lock time after 5 wrong OTPs: 30 s, 1 min, 2 min, 5 min, then 15 min every time.
+const List<int> _lockSeconds = <int>[30, 60, 120, 300, 900];
+const int _wrongBeforeLock = 5;
+
+String _waitText(int seconds) {
+  if (seconds < 60) return '$seconds seconds';
+  final m = (seconds / 60).ceil();
+  return m == 1 ? '1 minute' : '$m minutes';
+}
 
 /// Screen 5 – Confirm Delivery (2h)
 /// 4-digit OTP entry from customer, success state "Order Delivered!", Done button.
@@ -20,8 +42,31 @@ class _ConfirmDeliveryScreenState extends State<ConfirmDeliveryScreen> {
   String? error;
   bool delivered = false;
   bool _busy = false;
-  int _wrongTries = 0;
-  DateTime? _lockedUntil;
+
+  _OtpGuard get _guard =>
+      _otpGuards.putIfAbsent(widget.order.id, () => _OtpGuard());
+
+  /// Seconds left before the OTP can be tried again (0 = not locked).
+  int _lockLeft() {
+    final until = _guard.lockedUntil;
+    if (until == null) return 0;
+    final left = until.difference(DateTime.now()).inSeconds + 1;
+    if (left <= 0) {
+      _guard.lockedUntil = null;
+      return 0;
+    }
+    return left;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Re-opened while still locked: tell the partner straight away.
+    final left = _lockLeft();
+    if (left > 0) {
+      error = 'Too many wrong OTPs. Try again in ${_waitText(left)}.';
+    }
+  }
 
   void _press(String d) {
     if (otp.length >= 4 || _busy) return;
@@ -39,6 +84,61 @@ class _ConfirmDeliveryScreenState extends State<ConfirmDeliveryScreen> {
     });
   }
 
+  /// Reads the order from the server before the OTP is sent, so the partner gets a clear reason
+  /// (cancelled, already delivered, not picked up, reassigned) instead of a wrong "Incorrect OTP".
+  /// Returns null when the order is ready to be delivered (or when it could not be checked offline;
+  /// the server rules still decide in that case).
+  Future<String?> _checkOrderBeforeConfirm() async {
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('orders')
+          .doc(widget.order.id)
+          .get();
+      if (!snap.exists) return 'This order could not be found.';
+      final d = snap.data() ?? <String, dynamic>{};
+      final status = (d['status'] ?? '').toString();
+      if (status == 'Delivered') return 'This order is already marked as delivered.';
+      if (status == 'Cancelled') {
+        return 'This order was cancelled. Do not deliver it.';
+      }
+      if (status != 'Out for Delivery') {
+        return 'Pick up the order first, then confirm the delivery.';
+      }
+      final assigned = (d['partnerId'] ?? '').toString().trim().toLowerCase();
+      final me = (FirebaseAuth.instance.currentUser?.email ?? '').trim().toLowerCase();
+      if (assigned.isNotEmpty && me.isNotEmpty && assigned != me) {
+        return 'This order is no longer assigned to you.';
+      }
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        return 'This order is no longer assigned to you.';
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Cash on delivery: the partner must say that the cash was really collected.
+  Future<bool> _askCashCollected() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cash collected?'),
+        content: Text(
+            'Have you collected ${rupee(widget.order.amount)} in cash from the customer?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Not yet')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Yes, collected')),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
   /// Sends the OTP to Firestore. The real code is kept secret on the server side (rules compare it),
   /// so the partner cannot guess it from the app.
   Future<void> _confirm() async {
@@ -52,17 +152,45 @@ class _ConfirmDeliveryScreenState extends State<ConfirmDeliveryScreen> {
       return;
     }
 
-    final until = _lockedUntil;
-    if (until != null && DateTime.now().isBefore(until)) {
-      final secs = until.difference(DateTime.now()).inSeconds + 1;
+    final wait = _lockLeft();
+    if (wait > 0) {
       setState(() {
-        error = 'Too many wrong tries. Wait $secs seconds.';
+        error = 'Too many wrong OTPs. Try again in ${_waitText(wait)}.';
         otp = '';
       });
       return;
     }
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      error = null;
+    });
 
+    // 1) Is the order really ready to be delivered?
+    final problem = await _checkOrderBeforeConfirm();
+    if (!mounted) return;
+    if (problem != null) {
+      setState(() {
+        error = problem;
+        otp = '';
+        _busy = false;
+      });
+      return;
+    }
+
+    // 2) Cash on delivery: confirm the cash was collected.
+    if (widget.order.isCod) {
+      final collected = await _askCashCollected();
+      if (!mounted) return;
+      if (!collected) {
+        setState(() {
+          error = 'Collect ${rupee(widget.order.amount)} in cash before confirming.';
+          _busy = false;
+        });
+        return;
+      }
+    }
+
+    // 3) Send the OTP.
     String? err;
     try {
       err = await confirmDelivery(widget.order, otp);
@@ -72,6 +200,7 @@ class _ConfirmDeliveryScreenState extends State<ConfirmDeliveryScreen> {
 
     if (!mounted) return;
     if (err == null) {
+      _otpGuards.remove(widget.order.id);
       setState(() {
         delivered = true;
         _busy = false;
@@ -80,11 +209,17 @@ class _ConfirmDeliveryScreenState extends State<ConfirmDeliveryScreen> {
     }
     var message = err;
     if (err.startsWith('Incorrect')) {
-      _wrongTries++;
-      if (_wrongTries >= 5) {
-        _wrongTries = 0;
-        _lockedUntil = DateTime.now().add(const Duration(seconds: 30));
-        message = 'Too many wrong tries. Wait 30 seconds.';
+      final g = _guard;
+      g.wrong++;
+      final left = _wrongBeforeLock - g.wrong;
+      if (g.wrong >= _wrongBeforeLock) {
+        final seconds = _lockSeconds[g.level < _lockSeconds.length ? g.level : _lockSeconds.length - 1];
+        g.level++;
+        g.wrong = 0;
+        g.lockedUntil = DateTime.now().add(Duration(seconds: seconds));
+        message = 'Too many wrong OTPs. Try again in ${_waitText(seconds)}.';
+      } else if (left <= 2) {
+        message = '$err ($left ${left == 1 ? 'try' : 'tries'} left)';
       }
     }
     setState(() {

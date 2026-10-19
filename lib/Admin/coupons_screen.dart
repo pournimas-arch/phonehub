@@ -950,12 +950,45 @@ class _CouponFormScreenState extends State<CouponFormScreen> {
     setState(() => expiry = DateTime(n.year, n.month, n.day, 23, 59));
   }
 
+  /// Checks that the discount settings make sense together (the customer app ADDS flat + percent,
+  /// so a mix of both is almost always a mistake). Returns a message, or null when fine.
+  String? _logicError() {
+    final flat = _n(_flat), percent = _n(_percent), maxOff = _n(_maxOff), minOrder = _n(_minOrder);
+    if (flat > 0 && percent > 0) {
+      return 'Use either a flat amount or a percentage, not both (they would be added together)';
+    }
+    if (maxOff > 0 && percent == 0) {
+      return 'Max discount only works with a percentage. Clear it or set a percent';
+    }
+    if (percent >= 100 && maxOff == 0) {
+      return 'A 100% coupon needs a Max discount, otherwise the order becomes free';
+    }
+    if (flat > 0 && minOrder > 0 && flat >= minOrder) {
+      return 'Flat discount must be less than the minimum order amount';
+    }
+    if (flat > 0 && minOrder == 0 && flat > 10000) {
+      return 'A flat discount above ₹10,000 needs a minimum order amount';
+    }
+    if (maxOff > 0 && minOrder > 0 && percent > 0 && maxOff >= minOrder) {
+      return 'Max discount must be less than the minimum order amount';
+    }
+    if (active && expiry.isBefore(DateTime.now())) {
+      return 'The expiry date has already passed. Pick a later date or switch Active off';
+    }
+    return null;
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     if (!_form.currentState!.validate()) return;
     final code = _code.text.trim().toUpperCase();
     if (_n(_flat) == 0 && _n(_percent) == 0 && !freeDelivery) {
       snack(context, 'Set a flat amount, a percentage or free delivery');
+      return;
+    }
+    final logicError = _logicError();
+    if (logicError != null) {
+      snack(context, logicError);
       return;
     }
     if (store.coupons.any((c) => c != widget.coupon && c.code == code)) {
@@ -1152,6 +1185,8 @@ class _CouponFormScreenState extends State<CouponFormScreen> {
                 final t = (v ?? '').trim();
                 if (t.isEmpty) return 'Required';
                 if (t.length < 3) return 'At least 3 characters';
+                if (!RegExp(r'[A-Za-z]').hasMatch(t)) return 'Include at least one letter';
+                if (RegExp(r'^[-_]|[-_]$').hasMatch(t)) return 'Code cannot start or end with - or _';
                 return null;
               },
               suffix: TextButton(
@@ -1161,7 +1196,13 @@ class _CouponFormScreenState extends State<CouponFormScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            _input('Title shown to customers', _title, hint: 'e.g. Diwali Dhamaka', required: true, formatters: [LengthLimitingTextInputFormatter(40)]),
+            _input('Title shown to customers', _title, hint: 'e.g. Diwali Dhamaka', required: true, formatters: [LengthLimitingTextInputFormatter(40)], validator: (v) {
+              final t = (v ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
+              if (t.isEmpty) return 'Required';
+              if (t.length < 3) return 'At least 3 characters';
+              if (!RegExp(r'\p{L}', unicode: true).hasMatch(t)) return 'Title must contain words';
+              return null;
+            }),
 
             // ---- discount ----
             _label('Discount', icon: Icons.percent_rounded),

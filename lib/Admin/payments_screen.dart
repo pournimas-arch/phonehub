@@ -782,7 +782,7 @@ class _RefundTabState extends State<_RefundTab> {
             width: double.infinity,
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(color: AC.bg, borderRadius: BorderRadius.circular(8)),
-            child: Text('Reason: ${r.reason}', style: const TextStyle(fontSize: _fBody, color: AC.text, height: 1.3)),
+            child: Text('Reason: ${r.reason}${r.adminNote.isNotEmpty ? '\nAdmin note: ${r.adminNote}' : ''}', style: const TextStyle(fontSize: _fBody, color: AC.text, height: 1.3)),
           ),
           if (open) ...[
             const SizedBox(height: 10),
@@ -795,8 +795,12 @@ class _RefundTabState extends State<_RefundTab> {
                       child: OutlinedButton(
                         style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(40), foregroundColor: AC.danger, side: const BorderSide(color: AC.danger), textStyle: const TextStyle(fontSize: _fBody + 1, fontWeight: FontWeight.w800)),
                         onPressed: () async {
-                          final ok = await confirmDialog(context, 'Reject refund?', 'The customer will not receive ${inr(r.amount)}.', yes: 'Reject', danger: true);
-                          if (ok) store.setRefund(r, 'Rejected');
+                          final note = await showDialog<String>(
+                            context: context,
+                            builder: (_) => _RejectRefundDialog(amount: inr(r.amount)),
+                          );
+                          // the request may have been decided meanwhile (live data): only act on a still open request
+                          if (note != null && r.status == 'Requested') store.setRefund(r, 'Rejected', note: note);
                         },
                         child: const Text('Reject'),
                       ),
@@ -805,7 +809,14 @@ class _RefundTabState extends State<_RefundTab> {
                     Expanded(
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(40), textStyle: const TextStyle(fontSize: _fBody + 1, fontWeight: FontWeight.w800)),
-                        onPressed: () => store.setRefund(r, 'Approved'),
+                        onPressed: () async {
+                          if (r.amount <= 0) {
+                            snack(context, 'This refund has no amount, it cannot be approved');
+                            return;
+                          }
+                          final ok = await confirmDialog(context, 'Approve refund?', 'Approve a refund of ${inr(r.amount)} for order ${r.orderId}? The customer will be notified.', yes: 'Approve');
+                          if (ok && r.status == 'Requested') store.setRefund(r, 'Approved');
+                        },
                         child: const Text('Approve'),
                       ),
                     ),
@@ -813,9 +824,11 @@ class _RefundTabState extends State<_RefundTab> {
                     Expanded(
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(40), backgroundColor: AC.success, textStyle: const TextStyle(fontSize: _fBody + 1, fontWeight: FontWeight.w800)),
-                        onPressed: () {
+                        onPressed: () async {
+                          final ok = await confirmDialog(context, 'Mark as refunded?', 'Confirm that ${inr(r.amount)} has really been sent to the customer. This cannot be undone.', yes: 'Mark refunded');
+                          if (!ok || r.status != 'Approved') return;
                           store.setRefund(r, 'Refunded');
-                          snack(context, '${inr(r.amount)} marked as refunded');
+                          if (context.mounted) snack(context, '${inr(r.amount)} marked as refunded');
                         },
                         child: const Text('Mark as refunded'),
                       ),
@@ -1126,6 +1139,76 @@ class _CodTabState extends State<_CodTab> {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// Asks the admin WHY a refund is rejected (the customer gets this reason in the notification).
+class _RejectRefundDialog extends StatefulWidget {
+  final String amount;
+  const _RejectRefundDialog({required this.amount});
+
+  @override
+  State<_RejectRefundDialog> createState() => _RejectRefundDialogState();
+}
+
+class _RejectRefundDialogState extends State<_RejectRefundDialog> {
+  final TextEditingController _c = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  /// Reason rules: spaces cleaned, 5 to 200 characters, some words (not only numbers / symbols).
+  String? _validate(String raw) {
+    final t = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (t.isEmpty) return 'Enter the reason for rejecting';
+    if (t.length < 5) return 'Reason must be at least 5 characters';
+    if (t.length > 200) return 'Reason can be at most 200 characters';
+    if (!RegExp(r'[A-Za-z\u0900-\u097F]').hasMatch(t)) return 'Reason must contain some words, not only numbers or symbols';
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: const Text('Reject refund?', style: TextStyle(fontWeight: FontWeight.w800)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('The customer will not receive ${widget.amount}. Tell them why:', style: const TextStyle(color: AC.muted, height: 1.4)),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _c,
+            autofocus: true,
+            maxLines: 3,
+            inputFormatters: [LengthLimitingTextInputFormatter(200)],
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+            decoration: InputDecoration(hintText: 'Reason (e.g. phone has physical damage)', errorText: _error),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w700))),
+        TextButton(
+          onPressed: () {
+            final err = _validate(_c.text);
+            if (err != null) {
+              setState(() => _error = err);
+              return;
+            }
+            Navigator.pop(context, _c.text.trim().replaceAll(RegExp(r'\s+'), ' '));
+          },
+          child: const Text('Reject', style: TextStyle(fontWeight: FontWeight.w800, color: AC.danger)),
+        ),
+      ],
     );
   }
 }

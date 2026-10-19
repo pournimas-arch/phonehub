@@ -26,6 +26,10 @@ class PickedPhoto {
   }
 
   String toDataUri() => 'data:$contentType;base64,${base64Encode(bytes)}';
+
+  /// Size this photo will take inside the Firestore product document (base64 text),
+  /// worked out without building the whole data URI. Used to check the 1 MiB document limit.
+  int get storedBytes => 'data:$contentType;base64,'.length + ((bytes.lengthInBytes + 2) ~/ 3) * 4;
 }
 
 /// Picks local product photos. No Firebase Storage is used.
@@ -35,15 +39,35 @@ class PhoneImageService {
   static final ImagePicker _picker = ImagePicker();
 
   static const int maxPhotos = 6;
-  static const double _maxSide = 1600;
-  static const int _quality = 80;
-  static const int maxPhotoBytes = 10 * 1024 * 1024;
 
-  static String _extensionOf(XFile file) {
-    final name = file.name.toLowerCase();
-    if (name.endsWith('.png')) return 'png';
-    if (name.endsWith('.webp')) return 'webp';
-    return 'jpg';
+  // Photos are saved inside the Firestore product document (limit 1 MiB for the whole
+  // document), so they are shrunk harder than before: 1000 px on the long side, quality 60.
+  // A normal phone photo is then roughly 80 to 160 KB.
+  static const double _maxSide = 1000;
+  static const int _quality = 60;
+
+  /// Largest single photo accepted AFTER resizing (was 10 MB). The form also checks that all
+  /// photos together stay under its total limit.
+  static const int maxPhotoBytes = 350 * 1024;
+
+  /// A short message about the last pick (photos skipped because they were too large, an
+  /// unsupported type, or because only some fit under the photo limit). Null when everything
+  /// was fine. The form can show it after picking.
+  static String? lastNotice;
+
+  static String _kb(int bytes) => '${(bytes / 1024).round()} KB';
+
+  /// Works out the real file type from the first bytes (the file name can be wrong or missing).
+  /// Returns 'jpg', 'png', 'webp' or null when it is not a supported photo.
+  static String? detectExtension(Uint8List b) {
+    if (b.length >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return 'jpg';
+    if (b.length >= 8 && b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return 'png';
+    if (b.length >= 12 &&
+        b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 && // RIFF
+        b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) { // WEBP
+      return 'webp';
+    }
+    return null;
   }
 
   static Future<PickedPhoto> _readPhoto(XFile file) async {
@@ -51,14 +75,24 @@ class PhoneImageService {
     if (bytes.isEmpty) {
       throw StateError('The selected photo is empty. Please choose another photo.');
     }
-    if (bytes.lengthInBytes > maxPhotoBytes) {
-      throw StateError('Each product photo must be 10 MB or smaller.');
+    final ext = detectExtension(bytes);
+    if (ext == null) {
+      throw StateError('This file type is not supported. Please use a JPG, PNG or WEBP photo.');
     }
-    return PickedPhoto(bytes, _extensionOf(file));
+    if (bytes.lengthInBytes > maxPhotoBytes) {
+      throw StateError(
+        'This photo is still ${_kb(bytes.lengthInBytes)} after resizing. Each photo must be ${_kb(maxPhotoBytes)} or smaller. Choose a smaller photo or take a new one.',
+      );
+    }
+    return PickedPhoto(bytes, ext);
   }
 
   /// Select multiple photos from the gallery.
+  ///
+  /// Photos that can not be used are skipped and explained in [lastNotice]. If NONE of the
+  /// selected photos can be used, a [StateError] with the reason is thrown.
   static Future<List<PickedPhoto>> pickFromGallery({required int remaining}) async {
+    lastNotice = null;
     if (remaining <= 0) return const <PickedPhoto>[];
     try {
       final files = await _picker.pickMultiImage(
@@ -69,20 +103,39 @@ class PhoneImageService {
       if (files.isEmpty) return const <PickedPhoto>[];
 
       final photos = <PickedPhoto>[];
+      final problems = <String>[];
       for (final file in files.take(remaining)) {
-        photos.add(await _readPhoto(file));
+        try {
+          photos.add(await _readPhoto(file));
+        } on StateError catch (e) {
+          problems.add(e.message.toString());
+        }
       }
+
+      if (photos.isEmpty && problems.isNotEmpty) {
+        throw StateError(problems.first);
+      }
+
+      final notes = <String>[];
+      if (files.length > remaining) {
+        notes.add('Only $remaining photo${remaining == 1 ? '' : 's'} could be added (limit $maxPhotos per phone).');
+      }
+      if (problems.isNotEmpty) {
+        notes.add('${problems.length} photo${problems.length == 1 ? ' was' : 's were'} skipped: ${problems.first}');
+      }
+      lastNotice = notes.isEmpty ? null : notes.join(' ');
       return photos;
     } on StateError {
       rethrow;
     } catch (error, stackTrace) {
-      debugPrint('PhoneHub gallery selection failed: $error\\n$stackTrace');
+      debugPrint('PhoneHub gallery selection failed: $error\n$stackTrace');
       rethrow;
     }
   }
 
   /// Take a photo with the camera. Returns null if cancelled.
   static Future<PickedPhoto?> pickFromCamera() async {
+    lastNotice = null;
     try {
       final file = await _picker.pickImage(
         source: ImageSource.camera,
@@ -95,7 +148,7 @@ class PhoneImageService {
     } on StateError {
       rethrow;
     } catch (error, stackTrace) {
-      debugPrint('PhoneHub camera selection failed: $error\\n$stackTrace');
+      debugPrint('PhoneHub camera selection failed: $error\n$stackTrace');
       rethrow;
     }
   }
@@ -118,7 +171,7 @@ class PhoneImageService {
       );
     }
     if (photo.bytes.lengthInBytes > maxPhotoBytes) {
-      throw StateError('Each product photo must be 10 MB or smaller.');
+      throw StateError('Each product photo must be ${_kb(maxPhotoBytes)} or smaller.');
     }
     return photo.toDataUri();
   }

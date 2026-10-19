@@ -20,6 +20,40 @@ const _line = Color(0xFFDCE8FF);
 const _star = Color(0xFFF59E0B);
 const _subText = Color(0xFF55657F); // darker than AppColors.muted for better contrast on cards
 
+// ---------- Review text validation (logic only, no UI) ----------
+
+const int _kReviewMin = 5; // the text is optional, but if written it must be meaningful
+const int _kReviewMax = 500;
+
+String _cleanReviewText(String v) => v
+    .trim()
+    .replaceAll(RegExp(r'[ \t]+'), ' ')
+    .replaceAll(RegExp(r'\n{3,}'), '\n\n');
+
+/// Returns an error message, or null when the review text is fine (empty is allowed).
+String? _validateReviewText(String raw) {
+  final s = _cleanReviewText(raw);
+  if (s.isEmpty) return null;
+  if (s.length < _kReviewMin) return 'Write at least $_kReviewMin characters, or leave it empty';
+  if (s.length > _kReviewMax) return 'A review can be at most $_kReviewMax characters';
+
+  final letters = RegExp(r'\p{L}', unicode: true).allMatches(s).length;
+  if (letters == 0) return 'Your review must contain words';
+  if (RegExp(r'(.)\1{5,}').hasMatch(s)) return 'Please write a real review';
+  final visible = s.replaceAll(RegExp(r'\s'), '').length;
+  if (visible > 0 && letters / visible < 0.5) {
+    return 'Your review has too many symbols or numbers';
+  }
+  // Reviews are public: no links or phone numbers (spam / privacy).
+  if (RegExp(r'(https?:|www\.|\.com\b)', caseSensitive: false).hasMatch(s)) {
+    return 'Please remove links from your review';
+  }
+  if (RegExp(r'(\+?\d[\s-]?){10,}').hasMatch(s)) {
+    return 'Please remove phone numbers from your review';
+  }
+  return null;
+}
+
 /// Section title with the blue accent bar (same as Home).
 class _SectionTitle extends StatelessWidget {
   final String title;
@@ -1562,8 +1596,22 @@ class _WriteReviewSheetState extends State<_WriteReviewSheet> {
 
   Future<void> _save() async {
     if (_saving) return;
-    if (_stars == 0) {
+    if (_stars < 1 || _stars > 5) {
       setState(() => _error = 'Please tap a star to rate this phone');
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    final textError = _validateReviewText(_text.text);
+    if (textError != null) {
+      setState(() => _error = textError);
+      return;
+    }
+    final cleanText = _cleanReviewText(_text.text);
+
+    // Editing a review without changing anything: nothing to save.
+    final old = widget.existing;
+    if (old != null && old.stars == _stars && _cleanReviewText(old.text) == cleanText) {
+      setState(() => _error = 'You have not changed your review');
       return;
     }
     setState(() {
@@ -1571,7 +1619,7 @@ class _WriteReviewSheetState extends State<_WriteReviewSheet> {
       _error = null;
     });
     try {
-      await submitReview(phone: widget.phone, stars: _stars, text: _text.text);
+      await submitReview(phone: widget.phone, stars: _stars, text: cleanText);
       if (mounted) Navigator.pop(context, true);
     } on StateError catch (e) {
       if (mounted) setState(() => _error = e.message);

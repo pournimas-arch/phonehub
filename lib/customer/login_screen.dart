@@ -25,6 +25,64 @@ const Color _blue = Color(0xFF2452B8);
 const Color _cyan = Color(0xFF38D9FF);
 const Color _deepNavy = Color(0xFF071538);
 
+// -----------------------------------------------------------------------------
+// Login validation + brute-force protection
+// -----------------------------------------------------------------------------
+const int _maxEmailLength = 100;
+const int _maxPasswordLength = 128;
+
+/// After this many wrong passwords in a row the form is paused for a short time.
+const int _maxFailedAttempts = 5;
+
+// Kept at file level so the counter survives leaving and re-opening this screen
+// (for example after logout) during the same app session.
+int _failedLogins = 0;
+int _lockLevel = 0;
+DateTime? _lockedUntil;
+
+final RegExp _loginEmailFormat =
+RegExp(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$');
+
+String? _validateLoginEmail(String? v) {
+  final s = (v ?? '').trim();
+  if (s.isEmpty) return 'Please enter your email address';
+  if (s.length > _maxEmailLength) {
+    return 'Email must be $_maxEmailLength characters or fewer';
+  }
+  if (s.contains('..') || !_loginEmailFormat.hasMatch(s)) {
+    return 'Enter a valid email address';
+  }
+  return null;
+}
+
+String? _validateLoginPassword(String? v) {
+  final p = v ?? '';
+  if (p.isEmpty) return 'Please enter your password';
+  if (p.length < 6) return 'Password must be at least 6 characters';
+  if (p.length > _maxPasswordLength) {
+    return 'Password must be $_maxPasswordLength characters or fewer';
+  }
+  return null;
+}
+
+/// Seconds left before the next login try is allowed (0 = not locked).
+int _lockSecondsLeft() {
+  final until = _lockedUntil;
+  if (until == null) return 0;
+  final left = until.difference(DateTime.now()).inSeconds + 1;
+  if (left <= 0) {
+    _lockedUntil = null;
+    return 0;
+  }
+  return left;
+}
+
+String _waitText(int seconds) {
+  if (seconds < 60) return '$seconds seconds';
+  final m = (seconds / 60).ceil();
+  return m == 1 ? '1 minute' : '$m minutes';
+}
+
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -121,7 +179,17 @@ class _LoginScreenState extends State<LoginScreen>
 
     if (!_formKey.currentState!.validate()) return;
 
-    final email = _emailController.text.trim();
+    // Too many wrong passwords -> wait before trying again.
+    final wait = _lockSecondsLeft();
+    if (wait > 0) {
+      _showMessage(
+        'Too many failed attempts. Please try again in ${_waitText(wait)}, '
+            'or use Forgot password.',
+      );
+      return;
+    }
+
+    final email = _emailController.text.trim().toLowerCase();
     final password = _passwordController.text;
 
     setState(() => _isLoading = true);
@@ -142,6 +210,11 @@ class _LoginScreenState extends State<LoginScreen>
         return;
       }
 
+      // Correct password -> clear the failed-attempt counter.
+      _failedLogins = 0;
+      _lockLevel = 0;
+      _lockedUntil = null;
+
       // Use Firebase Authentication as a fallback if the Firestore
       // profile is unavailable or has not been created yet.
       String name = user.displayName ?? '';
@@ -155,6 +228,39 @@ class _LoginScreenState extends State<LoginScreen>
             .get();
 
         final userData = snapshot.data();
+
+        // No customer profile: this login may belong to a delivery partner or
+        // an admin. They must use their own app, not the customer app.
+        if (!snapshot.exists) {
+          final mail = (user.email ?? email).trim().toLowerCase();
+          String? wrongApp;
+          try {
+            final partner = await FirebaseFirestore.instance
+                .collection('partners')
+                .doc(mail)
+                .get();
+            if (partner.exists) {
+              wrongApp = 'This is a delivery partner account. '
+                  'Please sign in from the Delivery Partner app.';
+            } else {
+              final admin = await FirebaseFirestore.instance
+                  .collection('admins')
+                  .doc(user.uid)
+                  .get();
+              if (admin.exists) {
+                wrongApp = 'This is an admin account. '
+                    'Please sign in from the Admin app.';
+              }
+            }
+          } on FirebaseException {
+            // If these checks are not allowed, continue as a normal customer.
+          }
+          if (wrongApp != null) {
+            await FirebaseAuth.instance.signOut();
+            _showMessage(wrongApp);
+            return;
+          }
+        }
 
         if (userData != null && userData['blocked'] == true) {
           await FirebaseAuth.instance.signOut();
@@ -218,7 +324,21 @@ class _LoginScreenState extends State<LoginScreen>
         case 'user-not-found':
         case 'wrong-password':
         case 'invalid-credential':
-          message = 'Invalid email or password.';
+          _failedLogins++;
+          if (_failedLogins >= _maxFailedAttempts) {
+            // 30 s, then 60 s, 120 s ... up to 5 minutes.
+            final int seconds = (30 * (1 << _lockLevel)).clamp(30, 300).toInt();
+            _lockLevel = _lockLevel < 4 ? _lockLevel + 1 : _lockLevel;
+            _failedLogins = 0;
+            _lockedUntil = DateTime.now().add(Duration(seconds: seconds));
+            message = 'Too many failed attempts. '
+                'Please try again in ${_waitText(seconds)}, or use Forgot password.';
+          } else {
+            final left = _maxFailedAttempts - _failedLogins;
+            message = left <= 2
+                ? 'Invalid email or password. $left ${left == 1 ? 'attempt' : 'attempts'} left.'
+                : 'Invalid email or password.';
+          }
           break;
 
         case 'user-disabled':
@@ -639,6 +759,7 @@ class _LoginScreenState extends State<LoginScreen>
             ),
             child: Form(
               key: _formKey,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 mainAxisSize: MainAxisSize.min,
@@ -663,21 +784,11 @@ class _LoginScreenState extends State<LoginScreen>
                     onSubmitted: (_) {
                       _passwordFocus.requestFocus();
                     },
-                    validator: (value) {
-                      final email = value?.trim() ?? '';
-
-                      if (email.isEmpty) {
-                        return 'Please enter your email address';
-                      }
-
-                      if (!RegExp(
-                        r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
-                      ).hasMatch(email)) {
-                        return 'Enter a valid email address';
-                      }
-
-                      return null;
-                    },
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(_maxEmailLength),
+                      FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                    ],
+                    validator: _validateLoginEmail,
                   ),
 
                   SizedBox(height: 17 * scale),
@@ -716,13 +827,10 @@ class _LoginScreenState extends State<LoginScreen>
                         size: 20,
                       ),
                     ),
-                    validator: (value) {
-                      if ((value ?? '').length < 6) {
-                        return 'Password must be at least 6 characters';
-                      }
-
-                      return null;
-                    },
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(_maxPasswordLength),
+                    ],
+                    validator: _validateLoginPassword,
                   ),
 
                   SizedBox(height: 10 * scale),
@@ -1142,6 +1250,7 @@ class _LoginInput extends StatelessWidget {
   final Widget? suffix;
   final String? Function(String?)? validator;
   final ValueChanged<String>? onSubmitted;
+  final List<TextInputFormatter>? inputFormatters;
 
   const _LoginInput({
     required this.controller,
@@ -1155,11 +1264,13 @@ class _LoginInput extends StatelessWidget {
     this.suffix,
     this.validator,
     this.onSubmitted,
+    this.inputFormatters,
   });
 
   @override
   Widget build(BuildContext context) {
     return TextFormField(
+      inputFormatters: inputFormatters,
       controller: controller,
       focusNode: focusNode,
       keyboardType: keyboardType,

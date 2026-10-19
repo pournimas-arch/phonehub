@@ -539,6 +539,40 @@ class _PartnersScreenState extends State<PartnersScreen> {
 // Add / edit delivery partner
 // -----------------------------------------------------------------------------
 
+// Validation rules for the Add / Edit partner form.
+const int _kMaxPartnerName = 50;
+const int _kMaxPartnerEmail = 100;
+const int _kMaxPartnerVehicle = 40;
+
+final RegExp _partnerNameChars = RegExp(r"^\p{L}[\p{L}\p{M} .'-]*$", unicode: true);
+final RegExp _partnerEmailFormat =
+RegExp(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$');
+
+const Map<String, String> _partnerEmailTypos = {
+  'gmial.com': 'gmail.com',
+  'gmai.com': 'gmail.com',
+  'gmal.com': 'gmail.com',
+  'gamil.com': 'gmail.com',
+  'gmail.con': 'gmail.com',
+  'yahooo.com': 'yahoo.com',
+  'yaho.com': 'yahoo.com',
+  'hotmial.com': 'hotmail.com',
+  'outlok.com': 'outlook.com',
+};
+
+String _cleanPartnerName(String v) => v.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+/// Digits only, with a +91 / 91 / 0 prefix removed -> the 10-digit mobile number.
+String _partnerPhoneDigits(String v) {
+  var d = v.replaceAll(RegExp(r'\D'), '');
+  if (d.length == 12 && d.startsWith('91')) {
+    d = d.substring(2);
+  } else if (d.length == 11 && d.startsWith('0')) {
+    d = d.substring(1);
+  }
+  return d;
+}
+
 class PartnerFormScreen extends StatefulWidget {
   final Partner? partner;
 
@@ -557,6 +591,61 @@ class _PartnerFormScreenState extends State<PartnerFormScreen> {
 
   bool get editing => widget.partner != null;
 
+  String? _validateName(String? v) {
+    final s = _cleanPartnerName(v ?? '');
+    if (s.isEmpty) return 'Enter the partner name';
+    if (s.length < 2) return 'Name must be at least 2 characters';
+    if (s.length > _kMaxPartnerName) return 'Name must be $_kMaxPartnerName characters or fewer';
+    if (!_partnerNameChars.hasMatch(s)) return 'Use letters only (no numbers or symbols)';
+    return null;
+  }
+
+  String? _validatePhone(String? v) {
+    final raw = (v ?? '').trim();
+    final compact = raw.replaceAll(RegExp(r'\s'), '');
+    if (compact.isEmpty || compact == '+' || compact == '+91') {
+      return 'Enter the phone number';
+    }
+    if (RegExp(r'[^0-9+\-() ]').hasMatch(raw)) return 'Phone number can only contain digits';
+    final d = _partnerPhoneDigits(raw);
+    if (d.length != 10) return 'Enter a 10-digit mobile number';
+    if (!RegExp(r'^[6-9]').hasMatch(d)) return 'Mobile number must start with 6, 7, 8 or 9';
+    if (RegExp(r'^(\d)\1{9}$').hasMatch(d)) return 'Enter a real mobile number';
+    // Another partner already uses this number.
+    for (final p in store.partners) {
+      if (p.id != widget.partner?.id && _partnerPhoneDigits(p.phone) == d) {
+        return 'Already used by ${p.name}';
+      }
+    }
+    return null;
+  }
+
+  String? _validateEmail(String? v) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Enter the partner email';
+    if (s.length > _kMaxPartnerEmail) return 'Email must be $_kMaxPartnerEmail characters or fewer';
+    if (s.contains('..') || !_partnerEmailFormat.hasMatch(s)) return 'Enter a valid email';
+    final fix = _partnerEmailTypos[s.split('@').last.toLowerCase()];
+    if (fix != null) return 'Did you mean $fix?';
+    final email = s.toLowerCase();
+    if (store.partners.any((p) => p.id == email || p.email.toLowerCase() == email)) {
+      return 'A partner with this email already exists';
+    }
+    return null;
+  }
+
+  String? _validateVehicle(String? v) {
+    final s = (v ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (s.isEmpty) return null; // optional
+    if (s.length < 2) return 'Vehicle details are too short';
+    if (s.length > _kMaxPartnerVehicle) return 'Vehicle details must be $_kMaxPartnerVehicle characters or fewer';
+    if (RegExp(r"[^\p{L}\p{M}\p{N}\s.\-•/(),]", unicode: true).hasMatch(s)) {
+      return 'Remove special symbols from the vehicle details';
+    }
+    if (!RegExp(r'[A-Za-z0-9]').hasMatch(s)) return 'Enter the vehicle type or number';
+    return null;
+  }
+
   @override
   void dispose() {
     _name.dispose();
@@ -569,11 +658,15 @@ class _PartnerFormScreenState extends State<PartnerFormScreen> {
   void _save() {
     if (!_form.currentState!.validate()) return;
 
+    final name = _cleanPartnerName(_name.text);
+    final phone = '+91 ${_partnerPhoneDigits(_phone.text)}';
+    final vehicle = _vehicle.text.trim().replaceAll(RegExp(r'\s+'), ' ');
+
     if (editing) {
       widget.partner!
-        ..name = _name.text.trim()
-        ..phone = _phone.text.trim()
-        ..vehicle = _vehicle.text.trim();
+        ..name = name
+        ..phone = phone
+        ..vehicle = vehicle;
     } else {
       final email = _email.text.trim().toLowerCase();
       if (store.partners.any((p) => p.id == email)) {
@@ -584,9 +677,9 @@ class _PartnerFormScreenState extends State<PartnerFormScreen> {
         Partner(
           id: email,
           email: email,
-          name: _name.text.trim(),
-          phone: _phone.text.trim(),
-          vehicle: _vehicle.text.trim(),
+          name: name,
+          phone: phone,
+          vehicle: vehicle,
           // A new partner has no rating yet; it becomes the average of the stars customers give.
           rating: 0,
         ),
@@ -606,11 +699,13 @@ class _PartnerFormScreenState extends State<PartnerFormScreen> {
         TextCapitalization caps = TextCapitalization.none,
         String? Function(String?)? validator,
         bool required = false,
+        List<TextInputFormatter>? formatters,
       }) {
     return TextFormField(
       controller: c,
       keyboardType: type,
       textCapitalization: caps,
+      inputFormatters: formatters,
       style: const TextStyle(fontSize: _fBody + 1, fontWeight: FontWeight.w600),
       validator: validator ?? (required ? (v) => (v == null || v.trim().isEmpty) ? 'Required' : null : null),
       decoration: InputDecoration(
@@ -634,20 +729,39 @@ class _PartnerFormScreenState extends State<PartnerFormScreen> {
       appBar: _appBar(editing ? 'Edit partner' : 'Add partner'),
       body: Form(
         key: _form,
+        autovalidateMode: AutovalidateMode.onUserInteraction,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(14, 0, 14, 28),
           children: [
             _sectionLabel('Partner details', icon: Icons.person_outline_rounded),
-            _input('Full name', _name, caps: TextCapitalization.words, required: true),
+            _input(
+              'Full name',
+              _name,
+              caps: TextCapitalization.words,
+              validator: _validateName,
+              formatters: [
+                LengthLimitingTextInputFormatter(_kMaxPartnerName),
+                FilteringTextInputFormatter.allow(RegExp(r"[\p{L}\p{M} .'\-]", unicode: true)),
+              ],
+            ),
             const SizedBox(height: 12),
             _input(
               'Phone number',
               _phone,
               type: TextInputType.phone,
-              validator: (v) => (v == null || v.replaceAll(RegExp(r'\D'), '').length < 10) ? 'Enter a valid phone number' : null,
+              validator: _validatePhone,
+              formatters: [
+                LengthLimitingTextInputFormatter(17),
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9+\-() ]')),
+              ],
             ),
             const SizedBox(height: 12),
-            _input('Vehicle (e.g. Bike • MH 12 AB 1234)', _vehicle),
+            _input(
+              'Vehicle (e.g. Bike • MH 12 AB 1234)',
+              _vehicle,
+              validator: _validateVehicle,
+              formatters: [LengthLimitingTextInputFormatter(_kMaxPartnerVehicle)],
+            ),
 
             _sectionLabel('Login', icon: Icons.mail_outline_rounded),
             if (!editing)
@@ -655,7 +769,11 @@ class _PartnerFormScreenState extends State<PartnerFormScreen> {
                 'Email (the partner logs in with this)',
                 _email,
                 type: TextInputType.emailAddress,
-                validator: (v) => (v == null || !v.contains('@') || v.contains(' ')) ? 'Enter a valid email' : null,
+                validator: _validateEmail,
+                formatters: [
+                  LengthLimitingTextInputFormatter(_kMaxPartnerEmail),
+                  FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                ],
               )
             else
               Container(
@@ -1314,11 +1432,22 @@ class _ReasonDialog extends StatefulWidget {
 
 class _ReasonDialogState extends State<_ReasonDialog> {
   final TextEditingController _c = TextEditingController();
+  String? _error;
 
   @override
   void dispose() {
     _c.dispose();
     super.dispose();
+  }
+
+  /// Rejection reason rules: spaces cleaned, 3 to 120 characters, at least one letter.
+  String? _validateReason(String raw) {
+    final r = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (r.isEmpty) return 'Enter the reason for rejecting';
+    if (r.length < 3) return 'Reason must be at least 3 characters';
+    if (r.length > 120) return 'Reason can be at most 120 characters';
+    if (!RegExp(r'[A-Za-z\u0900-\u097F]').hasMatch(r)) return 'Reason must contain some words, not only numbers or symbols';
+    return null;
   }
 
   @override
@@ -1329,7 +1458,10 @@ class _ReasonDialogState extends State<_ReasonDialog> {
         controller: _c,
         autofocus: true,
         maxLength: 120,
-        decoration: const InputDecoration(hintText: 'Reason (e.g. photo is blurry)'),
+        onChanged: (_) {
+          if (_error != null) setState(() => _error = null);
+        },
+        decoration: InputDecoration(hintText: 'Reason (e.g. photo is blurry)', errorText: _error),
       ),
       actions: [
         TextButton(
@@ -1338,9 +1470,12 @@ class _ReasonDialogState extends State<_ReasonDialog> {
         ),
         TextButton(
           onPressed: () {
-            final r = _c.text.trim();
-            if (r.isEmpty) return;
-            Navigator.of(context).pop(r);
+            final err = _validateReason(_c.text);
+            if (err != null) {
+              setState(() => _error = err);
+              return;
+            }
+            Navigator.of(context).pop(_c.text.trim().replaceAll(RegExp(r'\s+'), ' '));
           },
           child: const Text('Reject', style: TextStyle(fontWeight: FontWeight.w800, color: AC.danger)),
         ),

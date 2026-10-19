@@ -1543,16 +1543,31 @@ class _ReturnCardState extends State<_ReturnCard> {
       ..showSnackBar(SnackBar(content: Text(text)));
   }
 
+  /// Details box rules: the last reason ("Changed my mind") may stay empty, the other reasons
+  /// need a short description (10 to 300 characters, with some words, not only numbers / symbols).
+  String? _validateDetails(String raw, int selected) {
+    final t = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+    final optional = selected == _reasons.length - 1;
+    if (t.isEmpty) return optional ? null : 'Please describe the problem so we can check your return';
+    if (t.length < 10) return 'Please write at least 10 characters';
+    if (t.length > 300) return 'Details can be at most 300 characters';
+    if (!RegExp(r'[A-Za-z\u0900-\u097F]').hasMatch(t)) return 'Please describe the problem in words';
+    return null;
+  }
+
   Future<void> _openSheet() async {
     var selected = 0;
+    String? detailsError;
+    final detailsCtrl = TextEditingController();
     final reason = await showModalBottomSheet<String>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(26))),
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) => SafeArea(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+            padding: EdgeInsets.fromLTRB(20, 18, 20, 16 + MediaQuery.of(ctx).viewInsets.bottom),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1564,7 +1579,10 @@ class _ReturnCardState extends State<_ReturnCard> {
                 for (int i = 0; i < _reasons.length; i++)
                   InkWell(
                     borderRadius: BorderRadius.circular(12),
-                    onTap: () => setSheet(() => selected = i),
+                    onTap: () => setSheet(() {
+                      selected = i;
+                      detailsError = null;
+                    }),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 9),
                       child: Row(
@@ -1576,10 +1594,39 @@ class _ReturnCardState extends State<_ReturnCard> {
                       ),
                     ),
                   ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: detailsCtrl,
+                  maxLines: 3,
+                  inputFormatters: [LengthLimitingTextInputFormatter(300)],
+                  onChanged: (_) {
+                    if (detailsError != null) setSheet(() => detailsError = null);
+                  },
+                  style: const TextStyle(fontSize: AppText.small, fontWeight: FontWeight.w700, color: AppColors.text),
+                  decoration: InputDecoration(
+                    hintText: selected == _reasons.length - 1 ? 'Add details (optional)' : 'Describe the problem',
+                    hintStyle: const TextStyle(color: AppColors.muted, fontSize: AppText.small),
+                    errorText: detailsError,
+                    errorStyle: const TextStyle(fontSize: AppText.caption),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                    filled: true,
+                    fillColor: checkoutFieldFill,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  ),
+                ),
                 const SizedBox(height: 10),
                 GradientButton(
                   height: 48,
-                  onTap: () => Navigator.pop(ctx, _reasons[selected]),
+                  onTap: () {
+                    final err = _validateDetails(detailsCtrl.text, selected);
+                    if (err != null) {
+                      setSheet(() => detailsError = err);
+                      return;
+                    }
+                    final note = detailsCtrl.text.trim().replaceAll(RegExp(r'\s+'), ' ');
+                    Navigator.pop(ctx, note.isEmpty ? _reasons[selected] : '${_reasons[selected]} - $note');
+                  },
                   child: const Text('Submit request', style: TextStyle(fontSize: AppText.small)),
                 ),
               ],
@@ -1588,6 +1635,7 @@ class _ReturnCardState extends State<_ReturnCard> {
         ),
       ),
     );
+    // detailsCtrl is not disposed here on purpose: the closing sheet may still be drawing it.
     if (reason != null) await _submit(reason);
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'theme.dart';
@@ -17,6 +18,14 @@ import 'package:phonehub/app_text.dart';
 ///    creates the profile document when it is missing.
 ///  * The app-wide profile is changed only AFTER Firestore has accepted the write, so the
 ///    screen can no longer show a saved value that was never stored.
+///
+/// NEW (validation):
+///  * Name: letters only, 2-50 characters, extra spaces collapsed.
+///  * Phone: 10-digit Indian mobile (starts with 6-9), +91 / 0 prefix accepted and removed,
+///    repeated-digit numbers refused, saved as clean 10 digits.
+///  * Email: proper format, max length, and the login email cannot be changed here
+///    (the error is shown on the field instead of only after pressing Save).
+///  * "No changes" guard, live validation while typing, and input filters.
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
 
@@ -31,6 +40,62 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final _email = TextEditingController(text: profile.value.email);
 
   bool _saving = false;
+
+  // ---------------------------------------------------------------------------
+  // Validation helpers
+  // ---------------------------------------------------------------------------
+  static const int _maxName = 50;
+  static const int _maxEmail = 100;
+
+  static final RegExp _nameChars = RegExp(r"^\p{L}[\p{L} .'-]*$", unicode: true);
+  static final RegExp _emailFormat =
+  RegExp(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$');
+
+  /// Trims and collapses repeated spaces ("Ravi   Kumar " -> "Ravi Kumar").
+  String _cleanName(String v) => v.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+  /// Keeps only the digits and removes a +91 / 91 / 0 prefix, so the result is the 10-digit number.
+  String _phoneDigits(String v) {
+    var d = v.replaceAll(RegExp(r'\D'), '');
+    if (d.length == 12 && d.startsWith('91')) {
+      d = d.substring(2);
+    } else if (d.length == 11 && d.startsWith('0')) {
+      d = d.substring(1);
+    }
+    return d;
+  }
+
+  String? _validateName(String? v) {
+    final s = _cleanName(v ?? '');
+    if (s.isEmpty) return 'Enter your name';
+    if (s.length < 2) return 'Name must be at least 2 characters';
+    if (s.length > _maxName) return 'Name must be $_maxName characters or fewer';
+    if (!_nameChars.hasMatch(s)) return 'Use letters only (no numbers or symbols)';
+    return null;
+  }
+
+  String? _validatePhone(String? v) {
+    final raw = (v ?? '').trim();
+    if (raw.isEmpty) return 'Enter your phone number';
+    if (RegExp(r'[^0-9+\-() ]').hasMatch(raw)) return 'Phone number can only contain digits';
+    final d = _phoneDigits(raw);
+    if (d.length != 10) return 'Enter a 10-digit mobile number';
+    if (!RegExp(r'^[6-9]').hasMatch(d)) return 'Mobile number must start with 6, 7, 8 or 9';
+    if (RegExp(r'^(\d)\1{9}$').hasMatch(d)) return 'Enter a real mobile number';
+    return null;
+  }
+
+  String? _validateEmail(String? v) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Enter your email';
+    if (s.length > _maxEmail) return 'Email must be $_maxEmail characters or fewer';
+    if (!_emailFormat.hasMatch(s)) return 'Enter a valid email';
+    final login = (FirebaseAuth.instance.currentUser?.email ?? '').trim().toLowerCase();
+    if (login.isNotEmpty && s.toLowerCase() != login) {
+      return 'Your login email cannot be changed here';
+    }
+    return null;
+  }
 
   @override
   void initState() {
@@ -114,7 +179,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Future<void> _save() async {
     FocusScope.of(context).unfocus();
-    if (!_formKey.currentState!.validate() || _saving) return;
+    if (_saving) return;
+    if (!_formKey.currentState!.validate()) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -132,8 +198,17 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       return;
     }
 
-    final name = _name.text.trim();
-    final phone = _phone.text.trim();
+    final name = _cleanName(_name.text);
+    final phone = _phoneDigits(_phone.text);
+
+    // Nothing changed -> no need to write to Firestore.
+    final current = profile.value;
+    if (name == _cleanName(current.name) && phone == _phoneDigits(current.phone)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No changes to save.')),
+      );
+      return;
+    }
 
     setState(() => _saving = true);
     try {
@@ -170,7 +245,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  Widget _field(String label, TextEditingController c, IconData icon, String? Function(String?) validator, {TextInputType? type}) {
+  Widget _field(
+      String label,
+      TextEditingController c,
+      IconData icon,
+      String? Function(String?) validator, {
+        TextInputType? type,
+        List<TextInputFormatter>? formatters,
+        TextInputAction? action,
+      }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Column(
@@ -183,6 +266,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             child: TextFormField(
               controller: c,
               keyboardType: type,
+              textInputAction: action,
+              inputFormatters: formatters,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
               validator: validator,
               decoration: InputDecoration(
                 prefixIcon: Icon(icon, color: AppColors.muted, size: 20),
@@ -222,9 +308,41 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
               ),
               const SizedBox(height: 22),
-              _field('Full name', _name, Icons.person_outline_rounded, (v) => (v == null || v.trim().length < 2) ? 'Enter your name' : null),
-              _field('Phone number', _phone, Icons.phone_outlined, (v) => (v == null || v.replaceAll(RegExp(r'\D'), '').length < 10) ? 'Enter a valid phone number' : null, type: TextInputType.phone),
-              _field('Email', _email, Icons.email_outlined, (v) => (v == null || !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v.trim())) ? 'Enter a valid email' : null, type: TextInputType.emailAddress),
+              _field(
+                'Full name',
+                _name,
+                Icons.person_outline_rounded,
+                _validateName,
+                action: TextInputAction.next,
+                formatters: [
+                  LengthLimitingTextInputFormatter(_maxName),
+                  FilteringTextInputFormatter.allow(RegExp(r"[\p{L} .'\-]", unicode: true)),
+                ],
+              ),
+              _field(
+                'Phone number',
+                _phone,
+                Icons.phone_outlined,
+                _validatePhone,
+                type: TextInputType.phone,
+                action: TextInputAction.next,
+                formatters: [
+                  LengthLimitingTextInputFormatter(16),
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9+\-() ]')),
+                ],
+              ),
+              _field(
+                'Email',
+                _email,
+                Icons.email_outlined,
+                _validateEmail,
+                type: TextInputType.emailAddress,
+                action: TextInputAction.done,
+                formatters: [
+                  LengthLimitingTextInputFormatter(_maxEmail),
+                  FilteringTextInputFormatter.deny(RegExp(r'\s')),
+                ],
+              ),
               const SizedBox(height: 8),
               ElevatedButton(
                 onPressed: _saving ? null : _save,
